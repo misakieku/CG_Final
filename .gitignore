@@ -1,0 +1,12 @@
+build/
+out/
+.vs/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+cmake-build-*/
+.cache/
+imgui.ini
+
+CG_FinalProject.pdf

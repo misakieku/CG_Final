@@ -1,0 +1,13 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+    - -DNOMINMAX
+    - -DWIN32_LEAN_AND_MEAN
+    - -D_CRT_SECURE_NO_WARNINGS
+    - -IF:/cpp/School/CG_Final/src
+    - -IF:/cpp/School/CG_Final/build/gladsources/glad/include
+    - -IF:/cpp/School/CG_Final/build/_deps/glfw-src/include
+    - -IF:/cpp/School/CG_Final/build/_deps/glm-src
+    - -IF:/cpp/School/CG_Final/build/_deps/imgui-src
+    - -IF:/cpp/School/CG_Final/build/_deps/imgui-src/backends
