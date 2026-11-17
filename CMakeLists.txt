@@ -131,10 +131,12 @@ cg_set_warnings(SOR_Modeller)
 # -----------------------------------------------------------------------------
 add_executable(MazeGame
     src/game/main.cpp
+    src/game/GameSession.cpp
     src/game/Window.cpp
     src/game/MazeGenerator.cpp
     src/game/MazeSceneBuilder.cpp
     src/game/OasisGenerator.cpp
+    src/game/TextureGenerator.cpp
     src/game/VineGenerator.cpp
     src/game/render/GpuBuffer.cpp
     src/game/render/MegaScene.cpp
@@ -147,5 +149,12 @@ add_executable(MazeGame
     src/game/render/passes/WaterPass.cpp
     src/game/render/passes/PostProcessPass.cpp
 )
-target_link_libraries(MazeGame PRIVATE cg_common)
+target_link_libraries(MazeGame PRIVATE cg_common imgui)
 cg_set_warnings(MazeGame)
+
+# Sync external GLSL shaders next to MazeGame.exe on every build for portable Bin/ execution
+add_custom_target(MazeShaders ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:MazeGame>/shaders"
+    COMMENT "Syncing GLSL shaders to MazeGame output directory"
+)
+add_dependencies(MazeGame MazeShaders)

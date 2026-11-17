@@ -4,6 +4,7 @@
 #include <glm/glm.hpp>
 
 #include <cstddef>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -273,6 +274,9 @@ public:
     Shader() = default;
     [[nodiscard]] static Shader compile(std::string_view vertexSource, std::string_view fragmentSource);
     [[nodiscard]] static Shader compileCompute(std::string_view computeSource);
+    [[nodiscard]] static Shader compileFiles(const std::filesystem::path &vertexPath, const std::filesystem::path &fragmentPath, const std::filesystem::path &includeRoot = {});
+    [[nodiscard]] static Shader compileComputeFile(const std::filesystem::path &computePath, const std::filesystem::path &includeRoot = {});
+    [[nodiscard]] static std::string preprocessSourceFile(const std::filesystem::path &entryPath, const std::filesystem::path &includeRoot = {});
 
     void use() const noexcept;
     static void unbind() noexcept;

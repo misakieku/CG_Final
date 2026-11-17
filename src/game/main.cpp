@@ -9,6 +9,7 @@
 #endif
 
 #include "common/gl_raii.hpp"
+#include "game/GameSession.hpp"
 #include "game/MazeGenerator.hpp"
 #include "game/MazeSceneBuilder.hpp"
 #include "game/Window.hpp"
@@ -16,6 +17,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
 #include <algorithm>
 #include <cmath>
@@ -48,82 +52,44 @@ namespace
     return std::filesystem::current_path();
 }
 
-struct FlyCamera
+struct ImGuiScope
 {
-    glm::vec3 position{0.0f, 1.7f, 6.0f};
-    float yaw = -glm::half_pi<float>();
-    float pitch = -0.10f;
-    float moveSpeed = 6.0f;
-    float lookSensitivity = 0.0022f;
-
-    [[nodiscard]] glm::vec3 forward() const noexcept
+    explicit ImGuiScope(GLFWwindow *win)
     {
-        const float cp = std::cos(pitch);
-        return glm::normalize(glm::vec3(cp * std::cos(yaw), std::sin(pitch), cp * std::sin(yaw)));
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui::StyleColorsDark();
+        ImGuiIO &io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+
+        const std::filesystem::path segoeUi = "C:/Windows/Fonts/segoeui.ttf";
+        if (std::filesystem::exists(segoeUi))
+        {
+            io.Fonts->AddFontFromFileTTF(segoeUi.string().c_str(), 17.0f);
+        }
+        else
+        {
+            io.Fonts->AddFontDefaultVector();
+        }
+
+        ImGuiStyle &style = ImGui::GetStyle();
+        style.WindowRounding = 6.0f;
+        style.WindowBorderSize = 1.0f;
+
+        ImGui_ImplGlfw_InitForOpenGL(win, true);
+        ImGui_ImplOpenGL3_Init("#version 460 core");
     }
 
-    void update(const game::Window &window, float dt) noexcept
+    ~ImGuiScope()
     {
-        if (window.isCursorCaptured())
-        {
-            const glm::vec2 delta = window.mouseDelta();
-            yaw += delta.x * lookSensitivity;
-            pitch = std::clamp(pitch - delta.y * lookSensitivity, -1.48f, 1.48f);
-        }
-
-        const glm::vec3 fwd = forward();
-        const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
-        glm::vec3 move(0.0f);
-
-        if (window.isKeyDown(GLFW_KEY_W))
-        {
-            move += fwd;
-        }
-        if (window.isKeyDown(GLFW_KEY_S))
-        {
-            move -= fwd;
-        }
-        if (window.isKeyDown(GLFW_KEY_D))
-        {
-            move += right;
-        }
-        if (window.isKeyDown(GLFW_KEY_A))
-        {
-            move -= right;
-        }
-        if (window.isKeyDown(GLFW_KEY_SPACE))
-        {
-            move.y += 1.0f;
-        }
-        if (window.isKeyDown(GLFW_KEY_LEFT_SHIFT))
-        {
-            move.y -= 1.0f;
-        }
-
-        if (glm::dot(move, move) > 1e-6f)
-        {
-            position += glm::normalize(move) * (moveSpeed * dt);
-        }
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
     }
 
-    [[nodiscard]] glm::mat4 viewMatrix() const noexcept
-    {
-        return glm::lookAt(position, position + forward(), glm::vec3(0.0f, 1.0f, 0.0f));
-    }
+    ImGuiScope(const ImGuiScope &) = delete;
+    ImGuiScope &operator=(const ImGuiScope &) = delete;
 };
-
-[[nodiscard]] float findInitialLookYaw(const game::MazeMapData &map) noexcept
-{
-    constexpr glm::ivec2 dirs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-    for (const glm::ivec2 d : dirs)
-    {
-        if (map.isWalkable(map.startCell + d))
-        {
-            return std::atan2(static_cast<float>(d.y), static_cast<float>(d.x));
-        }
-    }
-    return 0.0f;
-}
 
 void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool smokeTest)
 {
@@ -134,18 +100,21 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         std::cout << "OpenGL Version : " << glGetString(GL_VERSION) << '\n';
     }
 
-    game::render::Renderer renderer(window.width(), window.height());
+    ImGuiScope imgui(window.nativeHandle());
+
+    const std::filesystem::path exeShaderDir = exeDir / "shaders";
+    const std::filesystem::path shaderDir = std::filesystem::exists(exeShaderDir) ? exeShaderDir : (std::filesystem::current_path() / "shaders");
+    game::render::Renderer renderer(window.width(), window.height(), shaderDir);
 
     game::MazeMapData map = game::generateMaze({21, 21}, 3.0f, {1, 1});
     game::MazeSceneHandles sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
     renderer.resources().setPointLights(sceneHandles.pointLights);
 
-    FlyCamera camera;
-    camera.position = map.playerStart + glm::vec3(0.0f, 1.7f, 0.0f);
-    camera.yaw = findInitialLookYaw(map);
-    camera.pitch = -0.05f;
+    game::GameSession session;
+    session.reset(map, sceneHandles);
 
     std::uint32_t frameCount = 0;
+    float smoothedFps = 60.0f;
 
     while (!window.shouldClose())
     {
@@ -167,15 +136,17 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             window.setCursorCaptured(true);
         }
 
+        if (window.wasKeyPressed(GLFW_KEY_F5))
+        {
+            renderer.reloadShaders();
+        }
         if (window.wasKeyPressed(GLFW_KEY_R))
         {
             renderer.resources().scene() = game::render::MegaScene{};
             map = game::generateMaze({21, 21}, 3.0f, {1, 1});
             sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
             renderer.resources().setPointLights(sceneHandles.pointLights);
-            camera.position = map.playerStart + glm::vec3(0.0f, 1.7f, 0.0f);
-            camera.yaw = findInitialLookYaw(map);
-            camera.pitch = -0.05f;
+            session.reset(map, sceneHandles);
         }
 
         if (window.consumeResized())
@@ -183,7 +154,12 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             renderer.onResize(window.width(), window.height());
         }
 
-        camera.update(window, window.deltaTime());
+        const float dt = window.deltaTime();
+        if (dt > 1e-5f)
+        {
+            smoothedFps = glm::mix(smoothedFps, 1.0f / dt, 0.08f);
+        }
+        session.update(window, dt, renderer.resources());
 
         if (window.width() > 0 && window.height() > 0)
         {
@@ -193,18 +169,34 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(60.0f), window.aspectRatio(), farZ, nearZ);
 
             const game::render::RenderContext ctx{
-                .view = camera.viewMatrix(),
+                .view = session.viewMatrix(),
                 .proj = proj,
-                .cameraPos = camera.position,
+                .cameraPos = session.eyePosition(),
                 .nearPlane = nearZ,
                 .farPlane = farZ,
                 .elapsedTime = window.elapsedTime(),
-                .deltaTime = window.deltaTime(),
+                .deltaTime = dt,
                 .frameIndex = frameCount,
                 .viewportWidth = window.width(),
                 .viewportHeight = window.height(),
             };
             renderer.renderFrame(ctx);
+
+            ImGuiIO &io = ImGui::GetIO();
+            if (window.isCursorCaptured())
+            {
+                io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+            }
+            else
+            {
+                io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+            }
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            session.renderHud(window.width(), window.height(), smoothedFps);
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         }
 
         window.swapBuffers();

@@ -8,7 +8,8 @@ namespace game::render
 class LightCullingPass : public IRenderPass
 {
 public:
-    LightCullingPass();
+    explicit LightCullingPass(const std::filesystem::path &shaderDir);
+    void reloadShaders(const std::filesystem::path &shaderDir) override;
     void execute(const RenderContext &ctx, RenderResources &res) override;
 
 private:

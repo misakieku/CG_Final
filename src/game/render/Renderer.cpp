@@ -9,22 +9,58 @@
 
 #include <glad/gl.h>
 
+#include <iostream>
+#include <utility>
+
 namespace game::render
 {
 
-Renderer::Renderer(int initialWidth, int initialHeight)
+Renderer::Renderer(int initialWidth, int initialHeight, std::filesystem::path shaderDir)
+    : m_shaderDir(std::move(shaderDir))
 {
     // Match D3D12/Vulkan [0, 1] NDC depth for Reversed-Z precision
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
     m_resources.onResize(initialWidth, initialHeight);
+    m_resources.initBakedMaterials(m_shaderDir);
 
-    addPass<CullingPass>();
-    addPass<GBufferPass>();
-    addPass<LightCullingPass>();
-    addPass<CompositePass>();
-    addPass<WaterPass>();
-    addPass<PostProcessPass>();
+    addPass<CullingPass>(m_shaderDir);
+    addPass<GBufferPass>(m_shaderDir);
+    addPass<LightCullingPass>(m_shaderDir);
+    addPass<CompositePass>(m_shaderDir);
+    addPass<WaterPass>(m_shaderDir);
+    addPass<PostProcessPass>(m_shaderDir);
+}
+
+bool Renderer::reloadShaders()
+{
+    bool allOk = true;
+    try
+    {
+        m_resources.initBakedMaterials(m_shaderDir);
+    }
+    catch (const std::exception &ex)
+    {
+        allOk = false;
+        std::cerr << "[Material Bake Reload Failed] " << ex.what() << '\n';
+    }
+    for (const auto &pass : m_passes)
+    {
+        try
+        {
+            pass->reloadShaders(m_shaderDir);
+        }
+        catch (const std::exception &ex)
+        {
+            allOk = false;
+            std::cerr << "[Shader Reload Failed] " << ex.what() << '\n';
+        }
+    }
+    if (allOk)
+    {
+        std::cout << "[Shaders] Reloaded all passes from " << m_shaderDir.generic_string() << '\n';
+    }
+    return allOk;
 }
 
 void Renderer::onResize(int width, int height)

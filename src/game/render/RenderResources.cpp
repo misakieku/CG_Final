@@ -1,4 +1,5 @@
 #include "game/render/RenderResources.hpp"
+#include "game/TextureGenerator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -60,15 +61,25 @@ RenderResources::RenderResources()
         throw std::runtime_error("glCreateVertexArrays failed for fullscreen VAO");
     }
 
-    createStarterMaterialArray();
+    createStarterMaterialArrays();
 }
 
 RenderResources::~RenderResources()
 {
-    if (m_materialArrayTex != 0)
+    if (m_albedoArrayTex != 0)
     {
-        glDeleteTextures(1, &m_materialArrayTex);
-        m_materialArrayTex = 0;
+        glDeleteTextures(1, &m_albedoArrayTex);
+        m_albedoArrayTex = 0;
+    }
+    if (m_ormArrayTex != 0)
+    {
+        glDeleteTextures(1, &m_ormArrayTex);
+        m_ormArrayTex = 0;
+    }
+    if (m_normalArrayTex != 0)
+    {
+        glDeleteTextures(1, &m_normalArrayTex);
+        m_normalArrayTex = 0;
     }
     if (m_emptyVao != 0)
     {
@@ -169,6 +180,15 @@ void RenderResources::setPointLights(std::span<const GpuPointLight> lights)
     }
 }
 
+void RenderResources::updatePointLight(std::uint32_t index, const GpuPointLight &light)
+{
+    if (index >= m_lightCount)
+    {
+        return;
+    }
+    m_lightsSSBO.upload(static_cast<std::size_t>(index) * sizeof(GpuPointLight), sizeof(GpuPointLight), &light);
+}
+
 void RenderResources::updateFrameUniforms(const RenderContext &ctx)
 {
     const glm::mat4 vp = ctx.proj * ctx.view;
@@ -200,33 +220,86 @@ void RenderResources::drawFullscreenTriangle() const noexcept
     glBindVertexArray(0);
 }
 
-void RenderResources::createStarterMaterialArray()
+void RenderResources::createStarterMaterialArrays()
 {
-    constexpr int texSize = 256;
-    constexpr int layers = 8; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm bark/coconut, 7=foliage
+    constexpr int srcSize = 256;
+    constexpr int dstSize = kMaterialArraySize;
+    constexpr int layers = kMaterialArrayLayers; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm, 7=foliage
 
-    glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &m_materialArrayTex);
-    glTextureStorage3D(m_materialArrayTex, 1, GL_RGBA8, texSize, texSize, layers);
+    auto createArray = [&](GLuint &texId)
+    {
+        glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &texId);
+        glTextureStorage3D(texId, kMaterialMipLevels, GL_RGBA8, dstSize, dstSize, layers);
+        glTextureParameteri(texId, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTextureParameteri(texId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texId, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(texId, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    };
+    createArray(m_albedoArrayTex);
+    createArray(m_ormArrayTex);
+    createArray(m_normalArrayTex);
 
-    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(texSize * texSize * 4));
+    std::vector<glm::vec4> srcPixels(static_cast<std::size_t>(srcSize * srcSize));
+    std::vector<std::uint8_t> albedoPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
+    std::vector<std::uint8_t> ormPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
+    std::vector<std::uint8_t> flatNormalPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
+
+    for (std::size_t i = 0; i < flatNormalPixels.size(); i += 4)
+    {
+        flatNormalPixels[i + 0] = 128;
+        flatNormalPixels[i + 1] = 128;
+        flatNormalPixels[i + 2] = 255;
+        flatNormalPixels[i + 3] = 255;
+    }
+
     auto uploadLayer = [&](int layer, auto &&generator)
     {
-        for (int y = 0; y < texSize; ++y)
+        for (int y = 0; y < srcSize; ++y)
         {
-            for (int x = 0; x < texSize; ++x)
+            for (int x = 0; x < srcSize; ++x)
             {
-                const glm::vec4 rgba = generator(x, y);
-                const std::size_t idx = static_cast<std::size_t>((y * texSize + x) * 4);
-                pixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(rgba.r, 0.0f, 1.0f) * 255.0f);
-                pixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(rgba.g, 0.0f, 1.0f) * 255.0f);
-                pixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(rgba.b, 0.0f, 1.0f) * 255.0f);
-                pixels[idx + 3] = static_cast<std::uint8_t>(std::clamp(rgba.a, 0.0f, 1.0f) * 255.0f);
+                srcPixels[static_cast<std::size_t>(y * srcSize + x)] = generator(x, y);
             }
         }
-        glTextureSubImage3D(m_materialArrayTex, 0, 0, 0, layer, texSize, texSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+        const float scale = static_cast<float>(srcSize) / static_cast<float>(dstSize);
+        for (int y = 0; y < dstSize; ++y)
+        {
+            const float fy = static_cast<float>(y) * scale;
+            const int y0 = static_cast<int>(fy) % srcSize;
+            const int y1 = (y0 + 1) % srcSize;
+            const float ty = fy - std::floor(fy);
+            for (int x = 0; x < dstSize; ++x)
+            {
+                const float fx = static_cast<float>(x) * scale;
+                const int x0 = static_cast<int>(fx) % srcSize;
+                const int x1 = (x0 + 1) % srcSize;
+                const float tx = fx - std::floor(fx);
+
+                const glm::vec4 c00 = srcPixels[static_cast<std::size_t>(y0 * srcSize + x0)];
+                const glm::vec4 c10 = srcPixels[static_cast<std::size_t>(y0 * srcSize + x1)];
+                const glm::vec4 c01 = srcPixels[static_cast<std::size_t>(y1 * srcSize + x0)];
+                const glm::vec4 c11 = srcPixels[static_cast<std::size_t>(y1 * srcSize + x1)];
+                const glm::vec4 rgba = glm::mix(glm::mix(c00, c10, tx), glm::mix(c01, c11, tx), ty);
+
+                const std::size_t idx = static_cast<std::size_t>((y * dstSize + x) * 4);
+                albedoPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(rgba.r, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(rgba.g, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(rgba.b, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 3] = 255;
+
+                ormPixels[idx + 0] = 255; // AO = 1.0
+                ormPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(rgba.a, 0.0f, 1.0f) * 255.0f);
+                ormPixels[idx + 2] = 0;   // Metallic = 0.0
+                ormPixels[idx + 3] = 255;
+            }
+        }
+        glTextureSubImage3D(m_albedoArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, albedoPixels.data());
+        glTextureSubImage3D(m_ormArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, ormPixels.data());
+        glTextureSubImage3D(m_normalArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, flatNormalPixels.data());
     };
 
-    // Layer 0: Dungeon stone floor tiles (RGB = albedo, A = roughness)
+    // Layer 0: Starter stone floor tiles (overwritten by baked Compute floor in initBakedMaterials)
     uploadLayer(0, [](int x, int y) -> glm::vec4
     {
         const bool grout = (x % 64 < 3) || (y % 64 < 3);
@@ -279,7 +352,7 @@ void RenderResources::createStarterMaterialArray()
         return glm::vec4(c, roughness);
     });
 
-    // Layer 5: Opaque oasis desert spring water (glossy turquoise-teal with subtle ripple variation)
+    // Layer 5: Oasis water placeholder (WaterPass uses depth/Fresnel forward shading)
     uploadLayer(5, [](int x, int y) -> glm::vec4
     {
         const float u = static_cast<float>(x) / 255.0f;
@@ -320,10 +393,22 @@ void RenderResources::createStarterMaterialArray()
         return glm::vec4(glm::mix(midribCol, frondCol, blend) + vein, 0.56f);
     });
 
-    glTextureParameteri(m_materialArrayTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTextureParameteri(m_materialArrayTex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTextureParameteri(m_materialArrayTex, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTextureParameteri(m_materialArrayTex, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glGenerateTextureMipmap(m_albedoArrayTex);
+    glGenerateTextureMipmap(m_ormArrayTex);
+    glGenerateTextureMipmap(m_normalArrayTex);
+}
+
+void RenderResources::initBakedMaterials(const std::filesystem::path &shaderDir)
+{
+    const PBRTextures floorTex = generateFloor(shaderDir, kMaterialArraySize);
+
+    glCopyImageSubData(floorTex.albedo.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_albedoArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
+    glCopyImageSubData(floorTex.orm.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_ormArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
+    glCopyImageSubData(floorTex.normal.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_normalArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
+
+    glGenerateTextureMipmap(m_albedoArrayTex);
+    glGenerateTextureMipmap(m_ormArrayTex);
+    glGenerateTextureMipmap(m_normalArrayTex);
 }
 
 } // namespace game::render

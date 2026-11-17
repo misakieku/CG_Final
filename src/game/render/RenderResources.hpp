@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 
 namespace game::render
@@ -69,7 +70,9 @@ public:
     RenderResources &operator=(const RenderResources &) = delete;
 
     void onResize(int width, int height);
+    void initBakedMaterials(const std::filesystem::path &shaderDir);
     void setPointLights(std::span<const GpuPointLight> lights);
+    void updatePointLight(std::uint32_t index, const GpuPointLight &light);
     void updateFrameUniforms(const RenderContext &ctx);
     void drawFullscreenTriangle() const noexcept;
 
@@ -91,12 +94,18 @@ public:
     [[nodiscard]] const gl::Framebuffer &puddleFbo() const noexcept { return m_puddleFbo; }
     [[nodiscard]] const gl::Framebuffer &hdrFbo() const noexcept { return m_hdrFbo; }
 
-    [[nodiscard]] GLuint materialArrayTexId() const noexcept { return m_materialArrayTex; }
+    [[nodiscard]] GLuint albedoArrayTexId() const noexcept { return m_albedoArrayTex; }
+    [[nodiscard]] GLuint ormArrayTexId() const noexcept { return m_ormArrayTex; }
+    [[nodiscard]] GLuint normalArrayTexId() const noexcept { return m_normalArrayTex; }
     [[nodiscard]] int width() const noexcept { return m_width; }
     [[nodiscard]] int height() const noexcept { return m_height; }
 
 private:
-    void createStarterMaterialArray();
+    void createStarterMaterialArrays();
+
+    static constexpr int kMaterialArraySize = 1024;
+    static constexpr int kMaterialArrayLayers = 8;
+    static constexpr int kMaterialMipLevels = 11;
 
     int m_width = 0;
     int m_height = 0;
@@ -118,7 +127,9 @@ private:
     gl::Framebuffer m_puddleFbo; // Color attachments only (no depth attached so depthTex can be sampled safely)
     gl::Framebuffer m_hdrFbo;
 
-    GLuint m_materialArrayTex = 0;
+    GLuint m_albedoArrayTex = 0;
+    GLuint m_ormArrayTex = 0;
+    GLuint m_normalArrayTex = 0;
     GLuint m_emptyVao = 0;
 };
 

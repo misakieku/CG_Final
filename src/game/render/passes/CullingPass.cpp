@@ -5,100 +5,15 @@
 namespace game::render
 {
 
-namespace
+CullingPass::CullingPass(const std::filesystem::path &shaderDir)
 {
-
-constexpr const char *kCullComputeSrc = R"glsl(
-#version 460 core
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-
-layout(std140, binding = 0) uniform FrameUBO
-{
-    mat4 uView;
-    mat4 uProj;
-    mat4 uInvProj;
-    mat4 uViewProj;
-    mat4 uInvViewProj;
-    vec4 uCameraPos;
-    vec4 uFrustumPlanes[6];
-    vec4 uScreenParams;
-    vec4 uTimeParams;
-    uvec4 uCounts; // x = objectCount, y = meshCount, z = lightCount, w = frameIndex
-    uvec4 uClusterDims;
-};
-
-struct DrawObjectData
-{
-    mat4 model;
-    mat4 normalMatrix;
-    vec4 worldSphere;
-    uint meshId;
-    uint materialId;
-    uint flags;
-    uint pad;
-};
-
-struct DrawElementsIndirectCommand
-{
-    uint count;
-    uint instanceCount;
-    uint firstIndex;
-    int  baseVertex;
-    uint baseInstance;
-};
-
-layout(std430, binding = 0) readonly buffer ObjectsBuffer
-{
-    DrawObjectData Objects[];
-};
-
-layout(std430, binding = 2) buffer IndirectCmdBuffer
-{
-    DrawElementsIndirectCommand Cmds[];
-};
-
-layout(std430, binding = 3) writeonly buffer VisibleIndicesBuffer
-{
-    uint VisibleIndices[];
-};
-
-bool isSphereInFrustum(vec4 sphere)
-{
-    for (int i = 0; i < 6; ++i)
-    {
-        if (dot(uFrustumPlanes[i].xyz, sphere.xyz) + uFrustumPlanes[i].w < -sphere.w)
-        {
-            return false;
-        }
-    }
-    return true;
+    reloadShaders(shaderDir);
 }
 
-void main()
+void CullingPass::reloadShaders(const std::filesystem::path &shaderDir)
 {
-    uint objId = gl_GlobalInvocationID.x;
-    if (objId >= uCounts.x)
-    {
-        return;
-    }
-
-    DrawObjectData obj = Objects[objId];
-    if ((obj.flags & 1u) == 0u || (obj.flags & 8u) != 0u || !isSphereInFrustum(obj.worldSphere))
-    {
-        return;
-    }
-
-    uint localSlot = atomicAdd(Cmds[obj.meshId].instanceCount, 1u);
-    uint globalSlot = Cmds[obj.meshId].baseInstance + localSlot;
-    VisibleIndices[globalSlot] = objId;
-}
-)glsl";
-
-} // namespace
-
-CullingPass::CullingPass()
-    : m_cullShader(gl::Shader::compileCompute(kCullComputeSrc))
-{
+    gl::Shader compiled = gl::Shader::compileComputeFile(shaderDir / "passes/culling.comp", shaderDir);
+    m_cullShader = std::move(compiled);
 }
 
 void CullingPass::execute(const RenderContext &ctx, RenderResources &res)

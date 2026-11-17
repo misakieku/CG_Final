@@ -2,8 +2,11 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace gl
 {
@@ -409,6 +412,114 @@ Shader Shader::compileCompute(std::string_view computeSource)
     auto comp = compileStage(GL_COMPUTE_SHADER, computeSource);
     const GLuint stages[] = {comp.id()};
     return linkStages(stages);
+}
+
+namespace
+{
+
+[[nodiscard]] std::string readAndPreprocessRecursive(const std::filesystem::path &filePath, const std::filesystem::path &includeRoot, std::unordered_set<std::string> &pragmaOnceFiles, int depth)
+{
+    if (depth > 32)
+    {
+        throw std::runtime_error("GLSL #include recursion limit exceeded at: " + filePath.generic_string());
+    }
+
+    const std::string canonicalKey = std::filesystem::weakly_canonical(filePath).generic_string();
+    if (pragmaOnceFiles.contains(canonicalKey))
+    {
+        return {};
+    }
+
+    std::ifstream in(filePath, std::ios::binary);
+    if (!in)
+    {
+        throw std::runtime_error("Failed to open GLSL shader file: " + filePath.generic_string());
+    }
+
+    std::ostringstream out;
+    std::string line;
+    bool firstLine = true;
+    while (std::getline(in, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+        if (firstLine && line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+            static_cast<unsigned char>(line[1]) == 0xBB && static_cast<unsigned char>(line[2]) == 0xBF)
+        {
+            line.erase(0, 3);
+        }
+        firstLine = false;
+
+        const std::size_t firstNonWs = line.find_first_not_of(" \t");
+        if (firstNonWs != std::string::npos)
+        {
+            const std::string_view trimmed(line.data() + firstNonWs, line.size() - firstNonWs);
+            if (trimmed.starts_with("#pragma once"))
+            {
+                pragmaOnceFiles.insert(canonicalKey);
+                continue;
+            }
+            if (trimmed.starts_with("#include"))
+            {
+                const std::size_t q0 = trimmed.find('"');
+                const std::size_t q1 = (q0 != std::string_view::npos) ? trimmed.find('"', q0 + 1) : std::string_view::npos;
+                if (q0 == std::string_view::npos || q1 == std::string_view::npos)
+                {
+                    throw std::runtime_error("Malformed #include in " + filePath.generic_string() + ": " + line);
+                }
+                const std::filesystem::path rel(trimmed.substr(q0 + 1, q1 - q0 - 1));
+                std::filesystem::path resolved = filePath.parent_path() / rel;
+                if (!std::filesystem::exists(resolved) && !includeRoot.empty())
+                {
+                    resolved = includeRoot / rel;
+                }
+                out << "// [begin " << rel.generic_string() << "]\n";
+                out << readAndPreprocessRecursive(resolved, includeRoot, pragmaOnceFiles, depth + 1);
+                out << "// [end " << rel.generic_string() << "]\n";
+                continue;
+            }
+        }
+        out << line << '\n';
+    }
+    return out.str();
+}
+
+} // namespace
+
+std::string Shader::preprocessSourceFile(const std::filesystem::path &entryPath, const std::filesystem::path &includeRoot)
+{
+    std::unordered_set<std::string> pragmaOnceFiles;
+    const std::filesystem::path root = includeRoot.empty() ? entryPath.parent_path() : includeRoot;
+    return readAndPreprocessRecursive(entryPath, root, pragmaOnceFiles, 0);
+}
+
+Shader Shader::compileFiles(const std::filesystem::path &vertexPath, const std::filesystem::path &fragmentPath, const std::filesystem::path &includeRoot)
+{
+    const std::string vertSrc = preprocessSourceFile(vertexPath, includeRoot);
+    const std::string fragSrc = preprocessSourceFile(fragmentPath, includeRoot);
+    try
+    {
+        return compile(vertSrc, fragSrc);
+    }
+    catch (const std::exception &ex)
+    {
+        throw std::runtime_error("Shader [" + vertexPath.filename().generic_string() + " + " + fragmentPath.filename().generic_string() + "]: " + ex.what());
+    }
+}
+
+Shader Shader::compileComputeFile(const std::filesystem::path &computePath, const std::filesystem::path &includeRoot)
+{
+    const std::string compSrc = preprocessSourceFile(computePath, includeRoot);
+    try
+    {
+        return compileCompute(compSrc);
+    }
+    catch (const std::exception &ex)
+    {
+        throw std::runtime_error("Compute Shader [" + computePath.filename().generic_string() + "]: " + ex.what());
+    }
 }
 
 void Shader::use() const noexcept

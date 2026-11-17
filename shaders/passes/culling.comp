@@ -1,0 +1,51 @@
+#version 460 core
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/scene_types.glsl"
+
+layout(std430, binding = 0) readonly buffer ObjectsBuffer
+{
+    DrawObjectData Objects[];
+};
+
+layout(std430, binding = 2) buffer IndirectCmdBuffer
+{
+    DrawElementsIndirectCommand Cmds[];
+};
+
+layout(std430, binding = 3) writeonly buffer VisibleIndicesBuffer
+{
+    uint VisibleIndices[];
+};
+
+bool isSphereInFrustum(vec4 sphere)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        if (dot(uFrustumPlanes[i].xyz, sphere.xyz) + uFrustumPlanes[i].w < -sphere.w)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main()
+{
+    uint objId = gl_GlobalInvocationID.x;
+    if (objId >= uCounts.x)
+    {
+        return;
+    }
+
+    DrawObjectData obj = Objects[objId];
+    if ((obj.flags & kObjectVisibleFlag) == 0u || (obj.flags & kObjectWaterFlag) != 0u || !isSphereInFrustum(obj.worldSphere))
+    {
+        return;
+    }
+
+    uint localSlot = atomicAdd(Cmds[obj.meshId].instanceCount, 1u);
+    uint globalSlot = Cmds[obj.meshId].baseInstance + localSlot;
+    VisibleIndices[globalSlot] = objId;
+}

@@ -1,0 +1,77 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#include "tg/cell.glsl"
+
+layout(rgba8, binding = 0) writeonly uniform image2D uOutAlbedo;
+layout(rgba8, binding = 1) writeonly uniform image2D uOutOrm;
+layout(r16f, binding = 2) writeonly uniform image2D uOutHeight;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texSize = imageSize(uOutAlbedo);
+    if (coord.x >= texSize.x || coord.y >= texSize.y)
+    {
+        return;
+    }
+
+    vec2 uv = (vec2(coord) + 0.5) / vec2(texSize);
+    vec2 fractalUv = uv * vec2(1.0, 1.5);
+
+    CellInfo cell = ScatteredStoneGrid(uv, ivec2(5, 5), 5u);
+    float baseHeight = ComputeStoneHeight(uv, cell.edgeDist, cell.seed);
+
+
+    // Crack
+    float smallCrack;
+    float smallMask;
+    MaskedRidgedMultifractal2D(fractalUv, 10.0, 4.0, 4.0, 5.0, smallCrack, smallMask);
+    smallCrack *= 0.25;
+
+    float stoneHeight = ModifyStoneHeight(uv, smallCrack, smallMask, baseHeight);
+
+    float bigCrack;
+    float bigMask;
+    MaskedRidgedMultifractal2D(fractalUv, 6.0, 3.0, 4.0, 1.8, bigCrack, bigMask);
+    bigCrack *= 0.5;
+
+    float finalCrack = smallCrack + bigCrack;
+    float crackMask = smoothstep(0.5, 2.0, clamp(finalCrack * 2.0, 0.0, 1.0));
+
+    // Stone height
+    stoneHeight = ModifyStoneHeight(uv, bigCrack, bigMask, stoneHeight);
+
+    stoneHeight *= 0.1;
+    stoneHeight = smoothstep(0.045, 0.5, stoneHeight);
+    stoneHeight = SimpleNoise(uv, 40.0) * 2.2 * stoneHeight;
+
+
+    // Sand
+    float sandMask = clamp(smoothstep(0.93, 1.0, 1.0 - sqrt(max(stoneHeight, 0.0))), 0.0, 1.0);
+    float sandHeight = GradientNoise2D(uv * vec2(20.0, 200.0), ivec2(20, 200));
+    float sandNoise = smoothstep(0.25, 0.75, SimpleNoise(uv, 25.0));
+
+    sandHeight *= clamp(smoothstep(0.2, 1.0, sandHeight), 0.0, 1.0) * 0.01;
+    sandHeight *= sandMask;
+
+    float finalHeight = stoneHeight + sandHeight;
+
+    // Color (Unity ShaderGraph ColorNode mode=0 uses sRGB -> convert to Linear for HDR lighting)
+    float stoneVariants = Hash01(cell.seed);
+    stoneVariants = Blend_Exclusion(stoneVariants, smoothstep(0.4, 0.5, SimpleNoise(uv, 15.0)), 1.0);
+
+    vec3 albedo = mix(vec3(0.6431373, 0.5278432, 0.4180392), vec3(0.5803922, 0.4933334, 0.4062745), stoneVariants);
+    albedo = mix(albedo, vec3(0.6509804, 0.6050289, 0.5533333), crackMask);
+    albedo = mix(albedo, vec3(0.8553459, 0.6954791, 0.5029864), sandMask);
+    albedo = pow(max(albedo, vec3(0.0)), vec3(2.2));
+
+    float smoothness = sqrt(max(stoneHeight, 0.0));
+    float ao = clamp(mix(0.45, 1.0, smoothstep(0.0, 0.035, finalHeight)) * (1.0 - crackMask * 0.35), 0.25, 1.0);
+    float roughness = clamp(1.0 - smoothness - sandNoise * 0.05, 0.35, 0.96);
+    float metallic = 0.0;
+
+    imageStore(uOutAlbedo, coord, vec4(albedo, 1.0));
+    imageStore(uOutOrm, coord, vec4(ao, roughness, metallic, 1.0));
+    imageStore(uOutHeight, coord, vec4(finalHeight, 0.0, 0.0, 1.0));
+}

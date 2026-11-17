@@ -14,7 +14,11 @@ namespace game
 struct MazeSceneHandles
 {
     std::vector<std::uint32_t> treasureObjectIds;
+    std::vector<glm::vec3> treasureBasePositions;
+    std::vector<std::uint32_t> treasureLightIndices;
+    float treasureScale = 0.42f;
     std::uint32_t exitObjectId = 0;
+    std::uint32_t exitLightIndex = 0;
     std::vector<render::GpuPointLight> pointLights;
 };
 

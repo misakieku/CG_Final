@@ -10,7 +10,8 @@ namespace game::render
 class WaterPass final : public IRenderPass
 {
 public:
-    WaterPass();
+    explicit WaterPass(const std::filesystem::path &shaderDir);
+    void reloadShaders(const std::filesystem::path &shaderDir) override;
     void execute(const RenderContext &ctx, RenderResources &res) override;
 
 private:

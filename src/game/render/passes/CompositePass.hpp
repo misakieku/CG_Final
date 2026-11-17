@@ -10,7 +10,8 @@ namespace game::render
 class CompositePass final : public IRenderPass
 {
 public:
-    CompositePass();
+    explicit CompositePass(const std::filesystem::path &shaderDir);
+    void reloadShaders(const std::filesystem::path &shaderDir) override;
     void execute(const RenderContext &ctx, RenderResources &res) override;
 
 private:

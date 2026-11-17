@@ -1,0 +1,42 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D uHeightTex;
+layout(rgba8, binding = 0) writeonly uniform image2D uOutNormal;
+
+uniform float uStrength = 3.5;
+uniform float uMaxHeight = 1.0;
+
+float sampleWrapped(ivec2 coord, ivec2 texSize)
+{
+    ivec2 c = ((coord % texSize) + texSize) % texSize;
+    return texelFetch(uHeightTex, c, 0).r;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texSize = imageSize(uOutNormal);
+    if (coord.x >= texSize.x || coord.y >= texSize.y)
+    {
+        return;
+    }
+
+    float center = sampleWrapped(coord, texSize);
+    float tl = sampleWrapped(coord + ivec2(-1,  1), texSize);
+    float t  = sampleWrapped(coord + ivec2( 0,  1), texSize);
+    float tr = sampleWrapped(coord + ivec2( 1,  1), texSize);
+    float l  = sampleWrapped(coord + ivec2(-1,  0), texSize);
+    float r  = sampleWrapped(coord + ivec2( 1,  0), texSize);
+    float bl = sampleWrapped(coord + ivec2(-1, -1), texSize);
+    float b  = sampleWrapped(coord + ivec2( 0, -1), texSize);
+    float br = sampleWrapped(coord + ivec2( 1, -1), texSize);
+
+    // 3x3 Sobel gradients in UV space (+X right, +Y up)
+    float dX = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+    float dY = (tl + 2.0 * t + tr) - (bl + 2.0 * b + br);
+
+    vec3 N = normalize(vec3(-dX * uStrength, -dY * uStrength, 1.0));
+    float packedHeight = clamp(center / max(uMaxHeight, 1e-4), 0.0, 1.0);
+    imageStore(uOutNormal, coord, vec4(N * 0.5 + 0.5, packedHeight));
+}

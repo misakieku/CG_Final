@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <random>
+#include <span>
 
 namespace game
 {
@@ -98,6 +99,109 @@ struct LoadedSorModel
     return glm::scale(m, scale);
 }
 
+void buildCourtyardParapets(const MazeMapData &map, render::MegaScene &scene, std::uint32_t bevelBoxMesh, std::span<const std::uint32_t> rockMeshes, std::uint32_t stoneMat, std::uint32_t worldFlags, float wallHeight)
+{
+    const float cell = map.cellSize;
+    const float halfCell = cell * 0.5f;
+    constexpr glm::ivec2 dirs[4] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+
+    std::mt19937 rng(918273u);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+
+    for (int y = 1; y < map.size.y - 1; ++y)
+    {
+        for (int x = 1; x < map.size.x - 1; ++x)
+        {
+            if (map.getCell({x, y}) != CellKind::Courtyard)
+            {
+                continue;
+            }
+
+            const glm::vec3 center = map.cellCenterWorld({x, y});
+            for (const glm::ivec2 d : dirs)
+            {
+                const glm::ivec2 neighbor = glm::ivec2{x, y} + d;
+                const glm::vec3 outward(static_cast<float>(d.x), 0.0f, static_cast<float>(d.y));
+                const glm::vec3 inward = -outward;
+                const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
+                const glm::vec3 wallFace = center + outward * halfCell;
+                const float wallYaw = std::atan2(inward.x, inward.z);
+
+                if (map.inBounds(neighbor) && map.getCell(neighbor) != CellKind::Wall)
+                {
+                    continue;
+                }
+
+                // Protruding stone cornice trim breaking the razor-sharp top wall edge
+                const glm::vec3 cornicePos = wallFace - inward * 0.10f + glm::vec3(0.0f, wallHeight - 0.10f, 0.0f);
+                scene.addObject(bevelBoxMesh, stoneMat, makeTransform(cornicePos, wallYaw, glm::vec3(cell + 0.06f, 0.22f, 0.48f)), worldFlags);
+
+                // Two ruined merlon/capstone slots along each 3.0m courtyard wall edge
+                for (int slot = 0; slot < 2; ++slot)
+                {
+                    const float baseOff = (slot == 0 ? -0.74f : 0.74f) + (unit(rng) - 0.5f) * 0.14f;
+                    const float roll = unit(rng);
+                    if (roll < 0.44f)
+                    {
+                        // Tall weathered battlement merlon
+                        const float w = 0.86f + unit(rng) * 0.30f;
+                        const float h = 0.40f + unit(rng) * 0.26f;
+                        const float depth = 0.48f + unit(rng) * 0.16f;
+                        const glm::vec3 p = wallFace - inward * 0.26f + tangent * baseOff + glm::vec3(0.0f, wallHeight + h * 0.5f - 0.04f, 0.0f);
+                        scene.addObject(bevelBoxMesh, stoneMat, makeTransform(p, wallYaw + (unit(rng) - 0.5f) * 0.06f, glm::vec3(w, h, depth)), worldFlags);
+                    }
+                    else if (roll < 0.74f)
+                    {
+                        // Half-broken low parapet stone block
+                        const float w = 0.72f + unit(rng) * 0.32f;
+                        const float h = 0.16f + unit(rng) * 0.15f;
+                        const float depth = 0.44f + unit(rng) * 0.16f;
+                        const glm::vec3 p = wallFace - inward * 0.25f + tangent * baseOff + glm::vec3(0.0f, wallHeight + h * 0.5f - 0.03f, 0.0f);
+                        scene.addObject(bevelBoxMesh, stoneMat, makeTransform(p, wallYaw + (unit(rng) - 0.5f) * 0.10f, glm::vec3(w, h, depth)), worldFlags);
+                    }
+                    else if (!rockMeshes.empty() && unit(rng) < 0.70f)
+                    {
+                        // Collapsed gap with weathered rubble perched on the broken ledge
+                        const int count = (unit(rng) < 0.45f) ? 2 : 1;
+                        for (int r = 0; r < count; ++r)
+                        {
+                            const float s = 0.14f + unit(rng) * 0.11f;
+                            const float rOff = baseOff + (unit(rng) - 0.5f) * 0.45f;
+                            const glm::vec3 p = wallFace - inward * 0.22f + tangent * rOff + glm::vec3(0.0f, wallHeight + s * 0.25f, 0.0f);
+                            const std::uint32_t rockId = rockMeshes[static_cast<std::size_t>((x + y + slot + r)) % rockMeshes.size()];
+                            scene.addObject(rockId, stoneMat, makeTransform(p, unit(rng) * 6.283f, glm::vec3(s * 1.2f, s * 0.85f, s)), worldFlags);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Stepped finial capstones on pillars bordering open courtyards
+    for (const glm::vec3 &p : map.pillars)
+    {
+        const int vx = static_cast<int>(std::round(p.x / cell));
+        const int vy = static_cast<int>(std::round(p.z / cell));
+        bool touchesCourtyard = false;
+        for (int dy = -1; dy <= 0 && !touchesCourtyard; ++dy)
+        {
+            for (int dx = -1; dx <= 0; ++dx)
+            {
+                const glm::ivec2 c{vx + dx, vy + dy};
+                if (map.inBounds(c) && map.getCell(c) == CellKind::Courtyard)
+                {
+                    touchesCourtyard = true;
+                    break;
+                }
+            }
+        }
+        if (touchesCourtyard)
+        {
+            scene.addObject(bevelBoxMesh, stoneMat, makeTransform(p + glm::vec3(0.0f, wallHeight + 0.16f, 0.0f), 0.0f, glm::vec3(0.66f, 0.34f, 0.66f)), worldFlags);
+        }
+    }
+}
+
 } // namespace
 
 MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, float wallHeight)
@@ -173,6 +277,9 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(beam.position + right * bracketOff + glm::vec3(0.0f, wallHeight - 0.34f, 0.0f), beam.yaw, glm::vec3(0.52f, 0.58f, 0.52f)), worldFlags);
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(beam.position - right * bracketOff + glm::vec3(0.0f, wallHeight - 0.34f, 0.0f), beam.yaw, glm::vec3(0.52f, 0.58f, 0.52f)), worldFlags);
     }
+
+    // 4b. Courtyard ruined cornices, weathered battlements & corner finials
+    buildCourtyardParapets(map, scene, bevelBoxMesh, rockMeshes, kMatStoneWall, worldFlags, wallHeight);
 
     MazeSceneHandles handles;
     handles.pointLights.reserve(map.wallTorches.size() + map.candles.size() + map.treasurePositions.size() + 1);
@@ -284,7 +391,10 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
 
     // 8. Dead-end treasure pedestals + treasure.dat collectibles (+ decorative cup.dat / vase.dat accents)
     handles.treasureObjectIds.reserve(map.treasurePositions.size());
+    handles.treasureBasePositions.reserve(map.treasurePositions.size());
+    handles.treasureLightIndices.reserve(map.treasurePositions.size());
     const float treasureScale = treasureModel.loaded ? treasureModel.fitScale(0.85f, 0.28f) : 0.42f;
+    handles.treasureScale = treasureScale;
     const float cupScale = cupModel.loaded ? cupModel.fitScale(0.28f, 0.10f) : 0.18f;
     const float vaseScale = vaseModel.loaded ? vaseModel.fitScale(0.74f, 0.28f) : 0.45f;
 
@@ -298,13 +408,18 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         if (treasureModel.loaded)
         {
             const float posY = pedestalTopY - treasureModel.minY * treasureScale;
-            handles.treasureObjectIds.push_back(scene.addObject(treasureModel.meshId, kMatGoldAccent, makeTransform(tp + glm::vec3(0.0f, posY, 0.0f), 0.0f, glm::vec3(treasureScale))));
+            const glm::vec3 basePos = tp + glm::vec3(0.0f, posY, 0.0f);
+            handles.treasureBasePositions.push_back(basePos);
+            handles.treasureObjectIds.push_back(scene.addObject(treasureModel.meshId, kMatGoldAccent, makeTransform(basePos, 0.0f, glm::vec3(treasureScale))));
         }
         else
         {
-            handles.treasureObjectIds.push_back(scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(tp + glm::vec3(0.0f, pedestalTopY + 0.32f, 0.0f), 0.78f, glm::vec3(0.42f))));
+            const glm::vec3 basePos = tp + glm::vec3(0.0f, pedestalTopY + 0.32f, 0.0f);
+            handles.treasureBasePositions.push_back(basePos);
+            handles.treasureObjectIds.push_back(scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(basePos, 0.78f, glm::vec3(0.42f))));
         }
 
+        handles.treasureLightIndices.push_back(static_cast<std::uint32_t>(handles.pointLights.size()));
         handles.pointLights.push_back(GpuPointLight{
             .positionRadius = glm::vec4(tp + glm::vec3(0.0f, 1.4f, 0.0f), 4.2f),
             .colorIntensity = glm::vec4(1.0f, 0.80f, 0.35f, 1.25f),
@@ -372,6 +487,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     // 9. Exit shrine marker
     scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(map.exitPos + glm::vec3(0.0f, 0.06f, 0.0f), 0.0f, glm::vec3(1.5f, 0.12f, 1.5f)));
     handles.exitObjectId = scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(map.exitPos + glm::vec3(0.0f, 1.1f, 0.0f), 0.785f, glm::vec3(0.50f, 0.85f, 0.50f)));
+    handles.exitLightIndex = static_cast<std::uint32_t>(handles.pointLights.size());
     handles.pointLights.push_back(GpuPointLight{
         .positionRadius = glm::vec4(map.exitPos + glm::vec3(0.0f, 1.6f, 0.0f), 7.5f),
         .colorIntensity = glm::vec4(0.25f, 0.95f, 0.65f, 3.8f),

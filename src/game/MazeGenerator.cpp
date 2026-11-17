@@ -437,29 +437,90 @@ void populatePillarsAndBeams(MazeMapData &data)
         }
     }
 
-    // Overhead corridor ceiling beams spanning straight passages
+    // Overhead corridor ceiling beams: scan contiguous straight passages and space beams evenly
+    constexpr int kMinRunCells = 2;
+    constexpr float kEndMargin = 1.65f;
+    constexpr float kBeamSpacing = 4.60f;
+
+    auto emitRunBeams = [&](int startIdx, int endIdx, bool verticalRun, int fixedCoord)
+    {
+        const int runCells = endIdx - startIdx + 1;
+        if (runCells < kMinRunCells)
+        {
+            return;
+        }
+
+        const float spanStart = static_cast<float>(startIdx) * data.cellSize;
+        const float spanEnd = static_cast<float>(endIdx + 1) * data.cellSize;
+        const float usableStart = spanStart + kEndMargin;
+        const float usableEnd = spanEnd - kEndMargin;
+        const float usableLen = std::max(0.0f, usableEnd - usableStart);
+        const int beamCount = 1 + static_cast<int>(std::floor(usableLen / kBeamSpacing));
+        const float fixedWorld = (static_cast<float>(fixedCoord) + 0.5f) * data.cellSize;
+        const float yaw = verticalRun ? 0.0f : 1.5707963f;
+
+        for (int i = 0; i < beamCount; ++i)
+        {
+            const float coordWorld = (beamCount == 1)
+                                         ? (spanStart + spanEnd) * 0.5f
+                                         : (usableStart + (static_cast<float>(i) / static_cast<float>(beamCount - 1)) * usableLen);
+            const glm::vec3 pos = verticalRun ? glm::vec3(fixedWorld, 0.0f, coordWorld) : glm::vec3(coordWorld, 0.0f, fixedWorld);
+            data.ceilingBeams.push_back(PropSpawn{
+                .position = pos,
+                .normal = glm::vec3(0.0f, -1.0f, 0.0f),
+                .yaw = yaw,
+                .scale = 1.0f,
+            });
+        }
+    };
+
+    // North-South straight corridors (walled East & West)
+    for (int x = 1; x < data.size.x - 1; ++x)
+    {
+        int runStart = -1;
+        for (int y = 1; y < data.size.y - 1; ++y)
+        {
+            const bool isStraightNS = data.getCell({x, y}) == CellKind::Corridor &&
+                                      data.getCell({x - 1, y}) == CellKind::Wall &&
+                                      data.getCell({x + 1, y}) == CellKind::Wall;
+            if (isStraightNS && runStart < 0)
+            {
+                runStart = y;
+            }
+            else if (!isStraightNS && runStart >= 0)
+            {
+                emitRunBeams(runStart, y - 1, true, x);
+                runStart = -1;
+            }
+        }
+        if (runStart >= 0)
+        {
+            emitRunBeams(runStart, data.size.y - 2, true, x);
+        }
+    }
+
+    // East-West straight corridors (walled North & South)
     for (int y = 1; y < data.size.y - 1; ++y)
     {
+        int runStart = -1;
         for (int x = 1; x < data.size.x - 1; ++x)
         {
-            if (data.getCell({x, y}) != CellKind::Corridor || ((x + y) % 4 != 0))
+            const bool isStraightEW = data.getCell({x, y}) == CellKind::Corridor &&
+                                      data.getCell({x, y - 1}) == CellKind::Wall &&
+                                      data.getCell({x, y + 1}) == CellKind::Wall;
+            if (isStraightEW && runStart < 0)
             {
-                continue;
+                runStart = x;
             }
-            const bool walledEW =
-                data.getCell({x - 1, y}) == CellKind::Wall && data.getCell({x + 1, y}) == CellKind::Wall;
-            const bool walledNS =
-                data.getCell({x, y - 1}) == CellKind::Wall && data.getCell({x, y + 1}) == CellKind::Wall;
-            if (walledEW || walledNS)
+            else if (!isStraightEW && runStart >= 0)
             {
-                const float yaw = walledNS ? 1.5707963f : 0.0f;
-                data.ceilingBeams.push_back(PropSpawn{
-                    .position = data.cellCenterWorld({x, y}, 0.0f),
-                    .normal = glm::vec3(0.0f, -1.0f, 0.0f),
-                    .yaw = yaw,
-                    .scale = 1.0f,
-                });
+                emitRunBeams(runStart, x - 1, false, y);
+                runStart = -1;
             }
+        }
+        if (runStart >= 0)
+        {
+            emitRunBeams(runStart, data.size.x - 2, false, y);
         }
     }
 }
