@@ -63,6 +63,7 @@ MegaScene::MegaScene(MegaScene &&other) noexcept
       m_meshes(std::move(other.m_meshes)),
       m_meshInstanceCounts(std::move(other.m_meshInstanceCounts)),
       m_objects(std::move(other.m_objects)),
+      m_waterObjectIds(std::move(other.m_waterObjectIds)),
       m_vao(std::exchange(other.m_vao, 0)),
       m_vbo(std::move(other.m_vbo)),
       m_ibo(std::move(other.m_ibo)),
@@ -84,6 +85,7 @@ MegaScene &MegaScene::operator=(MegaScene &&other) noexcept
         m_meshes = std::move(other.m_meshes);
         m_meshInstanceCounts = std::move(other.m_meshInstanceCounts);
         m_objects = std::move(other.m_objects);
+        m_waterObjectIds = std::move(other.m_waterObjectIds);
         m_vao = std::exchange(other.m_vao, 0);
         m_vbo = std::move(other.m_vbo);
         m_ibo = std::move(other.m_ibo);
@@ -158,6 +160,10 @@ std::uint32_t MegaScene::addObject(std::uint32_t meshId, std::uint32_t materialI
 
     m_objects.push_back(obj);
     ++m_meshInstanceCounts[meshId];
+    if ((flags & kObjectWaterFlag) != 0u)
+    {
+        m_waterObjectIds.push_back(objectId);
+    }
     return objectId;
 }
 

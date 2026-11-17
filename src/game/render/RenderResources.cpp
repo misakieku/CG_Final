@@ -50,6 +50,9 @@ namespace
 RenderResources::RenderResources()
 {
     m_frameUbo = GpuBuffer::createPersistentMapped(sizeof(FrameUniforms));
+    m_lightsSSBO = GpuBuffer::createDynamic(sizeof(GpuPointLight));
+    m_clusterCountsSSBO = GpuBuffer::createImmutable(kTotalClusters * sizeof(std::uint32_t));
+    m_clusterIndicesSSBO = GpuBuffer::createImmutable(kTotalClusters * kMaxLightsPerCluster * sizeof(std::uint32_t));
 
     glCreateVertexArrays(1, &m_emptyVao);
     if (m_emptyVao == 0)
@@ -152,13 +155,28 @@ void RenderResources::onResize(int width, int height)
     m_hdrFbo.ensureComplete();
 }
 
-void RenderResources::updateFrameUniforms(const RenderContext &ctx, std::uint32_t lightCount)
+void RenderResources::setPointLights(std::span<const GpuPointLight> lights)
+{
+    m_lightCount = static_cast<std::uint32_t>(lights.size());
+    const std::size_t requiredBytes = std::max<std::size_t>(sizeof(GpuPointLight), lights.size_bytes());
+    if (requiredBytes > m_lightsSSBO.sizeBytes())
+    {
+        m_lightsSSBO = GpuBuffer::createDynamic(requiredBytes, lights.data());
+    }
+    else if (!lights.empty())
+    {
+        m_lightsSSBO.upload(0, lights.size_bytes(), lights.data());
+    }
+}
+
+void RenderResources::updateFrameUniforms(const RenderContext &ctx)
 {
     const glm::mat4 vp = ctx.proj * ctx.view;
 
     FrameUniforms ubo;
     ubo.view = ctx.view;
     ubo.proj = ctx.proj;
+    ubo.invProj = glm::inverse(ctx.proj);
     ubo.viewProj = vp;
     ubo.invViewProj = glm::inverse(vp);
     ubo.cameraPos = glm::vec4(ctx.cameraPos, ctx.nearPlane);
@@ -168,8 +186,9 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx, std::uint32_
         static_cast<float>(ctx.viewportHeight),
         1.0f / static_cast<float>(std::max(1, ctx.viewportWidth)),
         1.0f / static_cast<float>(std::max(1, ctx.viewportHeight)));
-    ubo.timeParams = glm::vec4(ctx.elapsedTime, ctx.deltaTime, ctx.nearPlane, 0.0f);
-    ubo.counts = glm::uvec4(m_scene.objectCount(), m_scene.meshCount(), lightCount, ctx.frameIndex);
+    ubo.timeParams = glm::vec4(ctx.elapsedTime, ctx.deltaTime, ctx.nearPlane, ctx.farPlane);
+    ubo.counts = glm::uvec4(m_scene.objectCount(), m_scene.meshCount(), m_lightCount, ctx.frameIndex);
+    ubo.clusterDims = glm::uvec4(kClusterCountX, kClusterCountY, kClusterCountZ, kMaxLightsPerCluster);
 
     std::memcpy(m_frameUbo.mappedPtr(), &ubo, sizeof(FrameUniforms));
 }
@@ -184,7 +203,7 @@ void RenderResources::drawFullscreenTriangle() const noexcept
 void RenderResources::createStarterMaterialArray()
 {
     constexpr int texSize = 256;
-    constexpr int layers = 4; // 0 = stone floor tiles, 1 = brick wall, 2 = tarnished gold, 3 = moss / vines
+    constexpr int layers = 8; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm bark/coconut, 7=foliage
 
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &m_materialArrayTex);
     glTextureStorage3D(m_materialArrayTex, 1, GL_RGBA8, texSize, texSize, layers);
@@ -244,6 +263,61 @@ void RenderResources::createStarterMaterialArray()
         const glm::vec3 leafCol(0.14f, 0.27f, 0.09f);
         const glm::vec3 c = glm::mix(stemCol, leafCol, stemToLeaf) + mottling;
         return glm::vec4(c, 0.72f);
+    });
+
+    // Layer 4: Oasis sand bank (uv.x blends damp shore silt -> warm dry desert sand)
+    uploadLayer(4, [](int x, int y) -> glm::vec4
+    {
+        const float u = static_cast<float>(x) / 255.0f;
+        const float v = static_cast<float>(y) / 255.0f;
+        const float grain = 0.025f * std::sin(u * 48.0f + v * 17.0f) * std::cos(v * 52.0f - u * 11.0f);
+        const glm::vec3 wetShore(0.24f, 0.20f, 0.14f);
+        const glm::vec3 warmSand(0.62f, 0.50f, 0.33f);
+        const float blend = std::clamp(u, 0.0f, 1.0f);
+        const glm::vec3 c = glm::mix(wetShore, warmSand, blend) + grain;
+        const float roughness = glm::mix(0.42f, 0.92f, blend);
+        return glm::vec4(c, roughness);
+    });
+
+    // Layer 5: Opaque oasis desert spring water (glossy turquoise-teal with subtle ripple variation)
+    uploadLayer(5, [](int x, int y) -> glm::vec4
+    {
+        const float u = static_cast<float>(x) / 255.0f;
+        const float v = static_cast<float>(y) / 255.0f;
+        const float caustic = 0.5f + 0.5f * std::sin(u * 18.849f + std::sin(v * 12.566f) * 1.6f) * std::cos(v * 18.849f);
+        const glm::vec3 deepTeal(0.04f, 0.26f, 0.31f);
+        const glm::vec3 aquaTint(0.11f, 0.45f, 0.47f);
+        const glm::vec3 c = glm::mix(deepTeal, aquaTint, caustic * 0.55f);
+        return glm::vec4(c, 0.10f);
+    });
+
+    // Layer 6: Palm trunk bark (u >= 0.35) & dark coconut husk (u < 0.35)
+    uploadLayer(6, [](int x, int y) -> glm::vec4
+    {
+        const float u = static_cast<float>(x) / 255.0f;
+        const float v = static_cast<float>(y) / 255.0f;
+        if (u < 0.35f)
+        {
+            const float fiber = 0.02f * std::sin(u * 60.0f + v * 40.0f);
+            return glm::vec4(0.16f + fiber, 0.10f + fiber * 0.6f, 0.055f, 0.86f);
+        }
+        const float ringBand = 0.5f + 0.5f * std::sin(v * 37.699f);
+        const float barkFiber = 0.025f * std::sin(u * 75.0f + v * 12.0f);
+        const glm::vec3 darkBark(0.20f, 0.14f, 0.09f);
+        const glm::vec3 lightBark(0.36f, 0.27f, 0.18f);
+        return glm::vec4(glm::mix(darkBark, lightBark, ringBand) + barkFiber, 0.88f);
+    });
+
+    // Layer 7: Tropical palm frond & fern foliage (u = 0 bright midrib -> u = 1 lush blade green)
+    uploadLayer(7, [](int x, int y) -> glm::vec4
+    {
+        const float u = static_cast<float>(x) / 255.0f;
+        const float v = static_cast<float>(y) / 255.0f;
+        const float vein = 0.022f * std::sin(u * 50.0f + v * 14.0f);
+        const glm::vec3 midribCol(0.28f, 0.42f, 0.12f);
+        const glm::vec3 frondCol(0.11f, 0.33f, 0.10f);
+        const float blend = std::clamp(u, 0.0f, 1.0f);
+        return glm::vec4(glm::mix(midribCol, frondCol, blend) + vein, 0.56f);
     });
 
     glTextureParameteri(m_materialArrayTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);

@@ -25,6 +25,15 @@ struct PropSpawn
     float scale = 1.0f;
 };
 
+struct OasisSpawn
+{
+    glm::vec3 center{0.0f};
+    float radiusX = 2.25f;
+    float radiusZ = 1.70f;
+    float yaw = 0.0f;
+    std::uint32_t seed = 0;
+};
+
 struct MazeMapData
 {
     glm::ivec2 size{0};
@@ -43,6 +52,7 @@ struct MazeMapData
     std::vector<PropSpawn> wallTorches;
     std::vector<PropSpawn> candles;
     std::vector<PropSpawn> rubbles;
+    std::vector<OasisSpawn> oases;
 
     [[nodiscard]] bool inBounds(glm::ivec2 point) const noexcept
     {

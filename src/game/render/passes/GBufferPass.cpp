@@ -18,6 +18,7 @@ layout(std140, binding = 0) uniform FrameUBO
 {
     mat4 uView;
     mat4 uProj;
+    mat4 uInvProj;
     mat4 uViewProj;
     mat4 uInvViewProj;
     vec4 uCameraPos;
@@ -25,6 +26,7 @@ layout(std140, binding = 0) uniform FrameUBO
     vec4 uScreenParams;
     vec4 uTimeParams;
     uvec4 uCounts;
+    uvec4 uClusterDims;
 };
 
 struct DrawObjectData

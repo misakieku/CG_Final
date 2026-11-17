@@ -1,4 +1,5 @@
 #include "game/MazeSceneBuilder.hpp"
+#include "game/OasisGenerator.hpp"
 #include "game/VineGenerator.hpp"
 
 #include "common/dat_mesh.hpp"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <random>
 
 namespace game
 {
@@ -19,6 +21,59 @@ constexpr std::uint32_t kMatFloor = 0;
 constexpr std::uint32_t kMatStoneWall = 1;
 constexpr std::uint32_t kMatGoldAccent = 2;
 constexpr std::uint32_t kMatVineMoss = 3;
+constexpr std::uint32_t kMatOasisSand = 4;
+constexpr std::uint32_t kMatOasisWater = 5;
+constexpr std::uint32_t kMatPalmBark = 6;
+constexpr std::uint32_t kMatTropicalFoliage = 7;
+
+struct LoadedSorModel
+{
+    std::uint32_t meshId = 0;
+    float minY = -0.5f;
+    float height = 1.0f;
+    float maxRadiusXZ = 0.5f;
+    bool loaded = false;
+
+    [[nodiscard]] float fitScale(float targetHeight, float maxAllowedRadius) const noexcept
+    {
+        const float byHeight = targetHeight / std::max(0.05f, height);
+        const float byRadius = maxAllowedRadius / std::max(0.05f, maxRadiusXZ);
+        return std::min(byHeight, byRadius);
+    }
+};
+
+[[nodiscard]] LoadedSorModel tryLoadSorModel(render::MegaScene &scene, const std::filesystem::path &path, std::uint32_t fallbackMeshId)
+{
+    LoadedSorModel result;
+    result.meshId = fallbackMeshId;
+    if (!std::filesystem::exists(path))
+    {
+        return result;
+    }
+
+    const cg::DatMeshData dat = cg::loadDatMesh(path);
+    if (dat.positions.empty() || dat.indices.empty())
+    {
+        return result;
+    }
+
+    float minY = dat.positions[0].y;
+    float maxY = dat.positions[0].y;
+    float maxRadSq = 0.0f;
+    for (const glm::vec3 &p : dat.positions)
+    {
+        minY = std::min(minY, p.y);
+        maxY = std::max(maxY, p.y);
+        maxRadSq = std::max(maxRadSq, p.x * p.x + p.z * p.z);
+    }
+
+    result.meshId = scene.registerDatMesh(dat);
+    result.minY = minY;
+    result.height = std::max(0.05f, maxY - minY);
+    result.maxRadiusXZ = std::max(0.05f, std::sqrt(maxRadSq));
+    result.loaded = true;
+    return result;
+}
 
 [[nodiscard]] bool hasOpenNeighbor(const MazeMapData &map, int x, int y) noexcept
 {
@@ -43,22 +98,6 @@ constexpr std::uint32_t kMatVineMoss = 3;
     return glm::scale(m, scale);
 }
 
-void computeBoundsY(const cg::DatMeshData &mesh, float &outMinY, float &outMaxY) noexcept
-{
-    if (mesh.positions.empty())
-    {
-        outMinY = 0.0f;
-        outMaxY = 1.0f;
-        return;
-    }
-    outMinY = outMaxY = mesh.positions[0].y;
-    for (const glm::vec3 &p : mesh.positions)
-    {
-        outMinY = std::min(outMinY, p.y);
-        outMaxY = std::max(outMaxY, p.y);
-    }
-}
-
 } // namespace
 
 MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, float wallHeight)
@@ -77,24 +116,15 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         registerRockMesh(scene, 303u),
     };
 
-    bool hasCustomSor = false;
-    std::uint32_t sorMesh = boxMesh;
-    float sorMinY = -0.5f;
-    float sorScale = 0.55f;
-    const std::filesystem::path datPath = exeDir / "myModel.dat";
-    if (std::filesystem::exists(datPath))
+    // Explicit semantic SOR model slots (.dat files placed next to executable)
+    LoadedSorModel treasureModel = tryLoadSorModel(scene, exeDir / "treasure.dat", bevelBoxMesh);
+    if (!treasureModel.loaded)
     {
-        const cg::DatMeshData dat = cg::loadDatMesh(datPath);
-        if (!dat.positions.empty() && !dat.indices.empty())
-        {
-            float maxY = 1.0f;
-            computeBoundsY(dat, sorMinY, maxY);
-            const float h = std::max(0.05f, maxY - sorMinY);
-            sorScale = 0.85f / h;
-            sorMesh = scene.registerDatMesh(dat);
-            hasCustomSor = true;
-        }
+        treasureModel = tryLoadSorModel(scene, exeDir / "myModel.dat", bevelBoxMesh);
     }
+    const LoadedSorModel candleModel = tryLoadSorModel(scene, exeDir / "candle.dat", bevelBoxMesh);
+    const LoadedSorModel vaseModel = tryLoadSorModel(scene, exeDir / "vase.dat", bevelBoxMesh);
+    const LoadedSorModel cupModel = tryLoadSorModel(scene, exeDir / "cup.dat", bevelBoxMesh);
 
     const std::uint32_t worldFlags = kObjectVisibleFlag | kObjectWorldUVFlag;
 
@@ -144,22 +174,103 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(beam.position - right * bracketOff + glm::vec3(0.0f, wallHeight - 0.34f, 0.0f), beam.yaw, glm::vec3(0.52f, 0.58f, 0.52f)), worldFlags);
     }
 
-    // 5. Wall torches (bracket + shaft + glowing ember tip blockout)
+    MazeSceneHandles handles;
+    handles.pointLights.reserve(map.wallTorches.size() + map.candles.size() + map.treasurePositions.size() + 1);
+
+    // 5. Wall torches (bracket + shaft + glowing ember tip + primary warm point light)
     for (const PropSpawn &torch : map.wallTorches)
     {
         const glm::vec3 back = -torch.normal;
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + back * 0.08f, torch.yaw, glm::vec3(0.16f, 0.24f, 0.16f)), worldFlags);
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + glm::vec3(0.0f, 0.14f, 0.0f), torch.yaw, glm::vec3(0.10f, 0.42f, 0.10f)), worldFlags);
         scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(torch.position + glm::vec3(0.0f, 0.39f, 0.0f), torch.yaw, glm::vec3(0.13f, 0.14f, 0.13f)));
+
+        const glm::vec3 lightPos = torch.position + torch.normal * 0.14f + glm::vec3(0.0f, 0.48f, 0.0f);
+        handles.pointLights.push_back(GpuPointLight{
+            .positionRadius = glm::vec4(lightPos, 9.2f),
+            .colorIntensity = glm::vec4(1.0f, 0.52f, 0.18f, 5.5f),
+        });
     }
 
-    // 6. Square candle pillars + tiny ember tip
-    for (const PropSpawn &candle : map.candles)
+    // 6. Clustered candles: 2-4 varied candles within a small radius sharing 1 soft low-intensity light
+    std::mt19937 propRng(424242u);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    std::uniform_real_distribution<float> angleDist(0.0f, 6.2831853f);
+
+    const float candleBaseScale = candleModel.loaded ? candleModel.fitScale(0.28f, 0.075f) : 1.0f;
+    for (const PropSpawn &clusterAnchor : map.candles)
     {
-        const float h = 0.26f * candle.scale;
-        const float w = 0.13f * candle.scale;
-        scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(candle.position + glm::vec3(0.0f, h * 0.5f, 0.0f), candle.yaw, glm::vec3(w, h, w)), worldFlags);
-        scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(candle.position + glm::vec3(0.0f, h + 0.04f, 0.0f), candle.yaw, glm::vec3(w * 0.45f, 0.09f, w * 0.45f)));
+        const int count = 2 + static_cast<int>(unit(propRng) * 3.0f); // 2..4 candles per cluster
+        constexpr float clusterRadius = 0.22f;
+        constexpr float minSepSq = 0.085f * 0.085f;
+        std::vector<glm::vec3> placed;
+        placed.reserve(static_cast<std::size_t>(count));
+
+        float maxFlameY = 0.22f;
+        for (int c = 0; c < count; ++c)
+        {
+            glm::vec3 cPos = clusterAnchor.position;
+            bool accepted = (c == 0);
+            for (int attempt = 0; attempt < 8 && !accepted; ++attempt)
+            {
+                const float r = (0.07f + 0.15f * std::sqrt(unit(propRng))) * (clusterRadius / 0.22f);
+                const float a = angleDist(propRng);
+                const glm::vec3 candidate = clusterAnchor.position + glm::vec3(std::cos(a) * r, 0.0f, std::sin(a) * r);
+                if (!map.isWalkable(map.worldToCell(candidate)))
+                {
+                    continue;
+                }
+                bool tooClose = false;
+                for (const glm::vec3 &prev : placed)
+                {
+                    const glm::vec2 d(candidate.x - prev.x, candidate.z - prev.z);
+                    if (glm::dot(d, d) < minSepSq)
+                    {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (!tooClose)
+                {
+                    cPos = candidate;
+                    accepted = true;
+                }
+            }
+            if (!accepted)
+            {
+                continue;
+            }
+            placed.push_back(cPos);
+
+            const float hScale = clusterAnchor.scale * (0.55f + 0.70f * unit(propRng));
+            const float wScale = clusterAnchor.scale * (0.80f + 0.35f * unit(propRng));
+            const float yaw = angleDist(propRng);
+
+            float flameY = 0.26f * hScale;
+            if (candleModel.loaded)
+            {
+                const float sx = candleBaseScale * wScale;
+                const float sy = candleBaseScale * hScale;
+                const float posY = -candleModel.minY * sy;
+                scene.addObject(candleModel.meshId, kMatStoneWall, makeTransform(cPos + glm::vec3(0.0f, posY, 0.0f), yaw, glm::vec3(sx, sy, sx)));
+                flameY = candleModel.height * sy;
+            }
+            else
+            {
+                const float h = 0.26f * hScale;
+                const float w = 0.12f * wScale;
+                scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(cPos + glm::vec3(0.0f, h * 0.5f, 0.0f), yaw, glm::vec3(w, h, w)), worldFlags);
+                flameY = h;
+            }
+            scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(cPos + glm::vec3(0.0f, flameY + 0.03f, 0.0f), yaw, glm::vec3(0.045f, 0.07f, 0.045f)));
+            maxFlameY = std::max(maxFlameY, flameY);
+        }
+
+        // Single shared dim warm glow (visibly dimmer than wall torches)
+        handles.pointLights.push_back(GpuPointLight{
+            .positionRadius = glm::vec4(clusterAnchor.position + glm::vec3(0.0f, maxFlameY + 0.12f, 0.0f), 3.3f),
+            .colorIntensity = glm::vec4(1.0f, 0.62f, 0.24f, 0.78f),
+        });
     }
 
     // 7. Floor rubble stones
@@ -171,31 +282,113 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         scene.addObject(meshId, kMatStoneWall, makeTransform(rock.position + glm::vec3(0.0f, rock.scale * 0.32f, 0.0f), rock.yaw, s), worldFlags);
     }
 
-    // 8. Dead-end treasure pedestals + SOR collectibles
-    MazeSceneHandles handles;
+    // 8. Dead-end treasure pedestals + treasure.dat collectibles (+ decorative cup.dat / vase.dat accents)
     handles.treasureObjectIds.reserve(map.treasurePositions.size());
-    for (const glm::vec3 &tp : map.treasurePositions)
+    const float treasureScale = treasureModel.loaded ? treasureModel.fitScale(0.85f, 0.28f) : 0.42f;
+    const float cupScale = cupModel.loaded ? cupModel.fitScale(0.28f, 0.10f) : 0.18f;
+    const float vaseScale = vaseModel.loaded ? vaseModel.fitScale(0.74f, 0.28f) : 0.45f;
+
+    for (std::size_t idx = 0; idx < map.treasurePositions.size(); ++idx)
     {
+        const glm::vec3 &tp = map.treasurePositions[idx];
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(tp + glm::vec3(0.0f, 0.14f, 0.0f), 0.0f, glm::vec3(1.05f, 0.28f, 1.05f)), worldFlags);
         scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(tp + glm::vec3(0.0f, 0.56f, 0.0f), 0.0f, glm::vec3(0.68f, 0.60f, 0.68f)), worldFlags);
 
         const float pedestalTopY = 0.86f;
-        if (hasCustomSor)
+        if (treasureModel.loaded)
         {
-            const float posY = pedestalTopY - sorMinY * sorScale + 0.06f;
-            handles.treasureObjectIds.push_back(scene.addObject(sorMesh, kMatGoldAccent, makeTransform(tp + glm::vec3(0.0f, posY, 0.0f), 0.0f, glm::vec3(sorScale))));
+            const float posY = pedestalTopY - treasureModel.minY * treasureScale;
+            handles.treasureObjectIds.push_back(scene.addObject(treasureModel.meshId, kMatGoldAccent, makeTransform(tp + glm::vec3(0.0f, posY, 0.0f), 0.0f, glm::vec3(treasureScale))));
         }
         else
         {
             handles.treasureObjectIds.push_back(scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(tp + glm::vec3(0.0f, pedestalTopY + 0.32f, 0.0f), 0.78f, glm::vec3(0.42f))));
+        }
+
+        handles.pointLights.push_back(GpuPointLight{
+            .positionRadius = glm::vec4(tp + glm::vec3(0.0f, 1.4f, 0.0f), 4.2f),
+            .colorIntensity = glm::vec4(1.0f, 0.80f, 0.35f, 1.25f),
+        });
+    }
+
+    // 8b. Decorative vase.dat & cup.dat props tucked safely against walkable courtyard/corridor walls
+    if (vaseModel.loaded || cupModel.loaded)
+    {
+        const float halfCell = cell * 0.5f;
+        constexpr glm::ivec2 dirs[4] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        for (int y = 1; y < map.size.y - 1; ++y)
+        {
+            for (int x = 1; x < map.size.x - 1; ++x)
+            {
+                const glm::ivec2 c{x, y};
+                const CellKind kind = map.getCell(c);
+                if (kind == CellKind::Wall || c == map.startCell || c == map.exitCell)
+                {
+                    continue;
+                }
+                const float chance = (kind == CellKind::Courtyard) ? 0.28f : 0.09f;
+                if (unit(propRng) > chance)
+                {
+                    continue;
+                }
+
+                for (const glm::ivec2 d : dirs)
+                {
+                    if (map.getCell(c + d) != CellKind::Wall)
+                    {
+                        continue;
+                    }
+                    const glm::vec3 outward(static_cast<float>(d.x), 0.0f, static_cast<float>(d.y));
+                    const glm::vec3 inward = -outward;
+                    const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
+                    const glm::vec3 wallFace = map.cellCenterWorld(c) + outward * halfCell;
+                    const glm::vec3 propPos = wallFace + inward * 0.42f + tangent * ((unit(propRng) - 0.5f) * cell * 0.45f);
+
+                    if (vaseModel.loaded && unit(propRng) < 0.70f)
+                    {
+                        const float s = vaseScale * (0.85f + 0.30f * unit(propRng));
+                        const float posY = -vaseModel.minY * s;
+                        scene.addObject(vaseModel.meshId, kMatStoneWall, makeTransform(propPos + glm::vec3(0.0f, posY, 0.0f), angleDist(propRng), glm::vec3(s)));
+
+                        if (cupModel.loaded && unit(propRng) < 0.45f)
+                        {
+                            const glm::vec3 cupPos = propPos + tangent * 0.34f + inward * 0.08f;
+                            if (map.isWalkable(map.worldToCell(cupPos)))
+                            {
+                                scene.addObject(cupModel.meshId, kMatGoldAccent, makeTransform(cupPos + glm::vec3(0.0f, -cupModel.minY * cupScale, 0.0f), angleDist(propRng), glm::vec3(cupScale)));
+                            }
+                        }
+                    }
+                    else if (cupModel.loaded)
+                    {
+                        scene.addObject(cupModel.meshId, kMatGoldAccent, makeTransform(propPos + glm::vec3(0.0f, -cupModel.minY * cupScale, 0.0f), angleDist(propRng), glm::vec3(cupScale)));
+                    }
+                    break;
+                }
+            }
         }
     }
 
     // 9. Exit shrine marker
     scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(map.exitPos + glm::vec3(0.0f, 0.06f, 0.0f), 0.0f, glm::vec3(1.5f, 0.12f, 1.5f)));
     handles.exitObjectId = scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(map.exitPos + glm::vec3(0.0f, 1.1f, 0.0f), 0.785f, glm::vec3(0.50f, 0.85f, 0.50f)));
+    handles.pointLights.push_back(GpuPointLight{
+        .positionRadius = glm::vec4(map.exitPos + glm::vec3(0.0f, 1.6f, 0.0f), 7.5f),
+        .colorIntensity = glm::vec4(0.25f, 0.95f, 0.65f, 3.8f),
+    });
 
-    // 10. AABB-guided crawling & hanging dungeon vines
+    // 10. Procedural desert oases inside >= 5x5 open-sky courtyards
+    const OasisMaterialIds oasisMaterials{
+        .stoneWall = kMatStoneWall,
+        .warmEmber = kMatGoldAccent,
+        .sandBank = kMatOasisSand,
+        .waterSurface = kMatOasisWater,
+        .palmBark = kMatPalmBark,
+        .tropicalFoliage = kMatTropicalFoliage,
+    };
+    buildMazeOases(map, scene, rockMeshes, bevelBoxMesh, oasisMaterials, handles.pointLights);
+
+    // 11. AABB-guided crawling & hanging dungeon vines
     generateDungeonVines(map, scene, kMatVineMoss, wallHeight);
 
     scene.buildGpuBuffers();

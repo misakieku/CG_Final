@@ -1,0 +1,147 @@
+#include "game/render/passes/LightCullingPass.hpp"
+
+#include <glad/gl.h>
+
+namespace game::render
+{
+
+namespace
+{
+
+constexpr const char *kLightCullingComputeSrc = R"glsl(
+#version 460 core
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std140, binding = 0) uniform FrameUBO
+{
+    mat4 uView;
+    mat4 uProj;
+    mat4 uInvProj;
+    mat4 uViewProj;
+    mat4 uInvViewProj;
+    vec4 uCameraPos;
+    vec4 uFrustumPlanes[6];
+    vec4 uScreenParams;
+    vec4 uTimeParams;  // x = time, y = dt, z = near, w = far
+    uvec4 uCounts;     // x = objectCount, y = meshCount, z = lightCount, w = frameIndex
+    uvec4 uClusterDims; // x = NX, y = NY, z = NZ, w = maxLightsPerCluster
+};
+
+struct GpuPointLight
+{
+    vec4 positionRadius;
+    vec4 colorIntensity;
+};
+
+layout(std430, binding = 4) readonly buffer PointLightsBuffer
+{
+    GpuPointLight Lights[];
+};
+
+layout(std430, binding = 5) writeonly buffer ClusterCountsBuffer
+{
+    uint ClusterCounts[];
+};
+
+layout(std430, binding = 6) writeonly buffer ClusterIndicesBuffer
+{
+    uint ClusterLightIndices[];
+};
+
+vec3 screenRayVS(vec2 uv)
+{
+    // Reversed-Z [0, 1]: ndcZ = 1.0 corresponds to the near plane
+    vec4 viewH = uInvProj * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    return viewH.xyz / viewH.w;
+}
+
+bool sphereIntersectsAabb(vec3 center, float radius, vec3 aabbMin, vec3 aabbMax)
+{
+    vec3 closest = clamp(center, aabbMin, aabbMax);
+    vec3 delta = center - closest;
+    return dot(delta, delta) <= (radius * radius);
+}
+
+void main()
+{
+    uint nx = uClusterDims.x;
+    uint ny = uClusterDims.y;
+    uint nz = uClusterDims.z;
+    uint totalClusters = nx * ny * nz;
+
+    uint clusterId = gl_GlobalInvocationID.x;
+    if (clusterId >= totalClusters)
+    {
+        return;
+    }
+
+    uint cx = clusterId % nx;
+    uint cy = (clusterId / nx) % ny;
+    uint cz = clusterId / (nx * ny);
+
+    vec2 uvMin = vec2(cx, cy) / vec2(nx, ny);
+    vec2 uvMax = vec2(cx + 1u, cy + 1u) / vec2(nx, ny);
+
+    vec3 rayMin = screenRayVS(uvMin);
+    vec3 rayMax = screenRayVS(uvMax);
+
+    float nearZ = max(uTimeParams.z, 1e-4);
+    float farZ  = max(uTimeParams.w, nearZ + 1.0);
+
+    // View space looks down -Z, so depth slice boundaries are negative
+    float zNearSlice = -nearZ * pow(farZ / nearZ, float(cz) / float(nz));
+    float zFarSlice  = -nearZ * pow(farZ / nearZ, float(cz + 1u) / float(nz));
+
+    vec3 p0 = rayMin * (zNearSlice / rayMin.z);
+    vec3 p1 = rayMin * (zFarSlice  / rayMin.z);
+    vec3 p2 = rayMax * (zNearSlice / rayMax.z);
+    vec3 p3 = rayMax * (zFarSlice  / rayMax.z);
+
+    vec3 aabbMin = min(min(p0, p1), min(p2, p3));
+    vec3 aabbMax = max(max(p0, p1), max(p2, p3));
+
+    uint maxPerCluster = uClusterDims.w;
+    uint baseOffset = clusterId * maxPerCluster;
+    uint lightCount = uCounts.z;
+    uint visibleCount = 0u;
+
+    for (uint i = 0u; i < lightCount; ++i)
+    {
+        GpuPointLight light = Lights[i];
+        vec3 posVS = (uView * vec4(light.positionRadius.xyz, 1.0)).xyz;
+        if (sphereIntersectsAabb(posVS, light.positionRadius.w, aabbMin, aabbMax))
+        {
+            if (visibleCount < maxPerCluster)
+            {
+                ClusterLightIndices[baseOffset + visibleCount] = i;
+                ++visibleCount;
+            }
+        }
+    }
+
+    ClusterCounts[clusterId] = visibleCount;
+}
+)glsl";
+
+} // namespace
+
+LightCullingPass::LightCullingPass()
+    : m_cullingShader(gl::Shader::compileCompute(kLightCullingComputeSrc))
+{
+}
+
+void LightCullingPass::execute(const RenderContext &ctx, RenderResources &res)
+{
+    (void)ctx;
+    m_cullingShader.use();
+    res.frameUbo().bindBase(GL_UNIFORM_BUFFER, 0);
+    res.lightsSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 4);
+    res.clusterCountsSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 5);
+    res.clusterIndicesSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 6);
+
+    const GLuint groupsX = (kTotalClusters + 63u) / 64u;
+    glDispatchCompute(groupsX, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
+} // namespace game::render

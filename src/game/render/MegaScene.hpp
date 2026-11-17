@@ -57,6 +57,7 @@ struct DrawElementsIndirectCommand
 inline constexpr std::uint32_t kObjectVisibleFlag = 1u << 0;
 inline constexpr std::uint32_t kObjectWorldUVFlag = 1u << 1;
 inline constexpr std::uint32_t kObjectWindSwayFlag = 1u << 2;
+inline constexpr std::uint32_t kObjectWaterFlag = 1u << 3;
 
 /// Persistent GPU scene holding all meshes in a single MegaVBO/MegaIBO and bucketed indirect buffers.
 class MegaScene
@@ -92,6 +93,9 @@ public:
 
     [[nodiscard]] std::uint32_t meshCount() const noexcept { return static_cast<std::uint32_t>(m_meshes.size()); }
     [[nodiscard]] std::uint32_t objectCount() const noexcept { return static_cast<std::uint32_t>(m_objects.size()); }
+    [[nodiscard]] std::span<const std::uint32_t> waterObjectIds() const noexcept { return m_waterObjectIds; }
+    [[nodiscard]] const DrawObjectData &object(std::uint32_t objectId) const { return m_objects.at(objectId); }
+    [[nodiscard]] const MeshSpan &meshSpan(std::uint32_t meshId) const { return m_meshes.at(meshId); }
 
 private:
     void destroyVao() noexcept;
@@ -101,6 +105,7 @@ private:
     std::vector<MeshSpan> m_meshes;
     std::vector<std::uint32_t> m_meshInstanceCounts;
     std::vector<DrawObjectData> m_objects;
+    std::vector<std::uint32_t> m_waterObjectIds;
 
     GLuint m_vao = 0;
     GpuBuffer m_vbo;

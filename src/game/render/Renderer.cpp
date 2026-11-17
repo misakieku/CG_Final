@@ -3,6 +3,9 @@
 #include "game/render/passes/CompositePass.hpp"
 #include "game/render/passes/CullingPass.hpp"
 #include "game/render/passes/GBufferPass.hpp"
+#include "game/render/passes/LightCullingPass.hpp"
+#include "game/render/passes/PostProcessPass.hpp"
+#include "game/render/passes/WaterPass.hpp"
 
 #include <glad/gl.h>
 
@@ -18,8 +21,10 @@ Renderer::Renderer(int initialWidth, int initialHeight)
 
     addPass<CullingPass>();
     addPass<GBufferPass>();
-    // Insert your PuddlePass, ShadowPass, FptlPass, FogPass here
+    addPass<LightCullingPass>();
     addPass<CompositePass>();
+    addPass<WaterPass>();
+    addPass<PostProcessPass>();
 }
 
 void Renderer::onResize(int width, int height)

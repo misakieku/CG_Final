@@ -464,6 +464,41 @@ void populatePillarsAndBeams(MazeMapData &data)
     }
 }
 
+void populateOases(MazeMapData &data, const std::vector<Courtyard> &courtyards, std::mt19937 &eng)
+{
+    std::uniform_real_distribution<float> pushDist(0.55f, 0.95f);
+    std::uniform_real_distribution<float> yawRand(0.0f, 6.2831853f);
+
+    constexpr float kRadiusX = 2.15f;
+    constexpr float kRadiusZ = 1.60f;
+    constexpr float kSafeFootprintMargin = 4.70f; // ~3.1m oasis outer bank + 1.6m walkable shore margin
+
+    for (const Courtyard &c : courtyards)
+    {
+        if (c.size.x < 5 || c.size.y < 5)
+        {
+            continue;
+        }
+
+        const float halfW = static_cast<float>(c.size.x) * data.cellSize * 0.5f;
+        const float halfH = static_cast<float>(c.size.y) * data.cellSize * 0.5f;
+        const float maxOffX = std::max(0.0f, halfW - kSafeFootprintMargin);
+        const float maxOffZ = std::max(0.0f, halfH - kSafeFootprintMargin);
+
+        const float angle = yawRand(eng);
+        const float push = pushDist(eng);
+        const float centerX = (static_cast<float>(c.start.x) + static_cast<float>(c.size.x) * 0.5f) * data.cellSize + std::cos(angle) * maxOffX * push;
+        const float centerZ = (static_cast<float>(c.start.y) + static_cast<float>(c.size.y) * 0.5f) * data.cellSize + std::sin(angle) * maxOffZ * push;
+        data.oases.push_back(OasisSpawn{
+            .center = glm::vec3(centerX, 0.0f, centerZ),
+            .radiusX = kRadiusX,
+            .radiusZ = kRadiusZ,
+            .yaw = yawRand(eng),
+            .seed = eng(),
+        });
+    }
+}
+
 void populateProps(MazeMapData &data, std::mt19937 &eng)
 {
     std::uniform_real_distribution<float> unitRand(0.0f, 1.0f);
@@ -566,8 +601,22 @@ void populateProps(MazeMapData &data, std::mt19937 &eng)
                 {
                     const float ox = (unitRand(eng) - 0.5f) * (data.cellSize * 0.75f);
                     const float oz = (unitRand(eng) - 0.5f) * (data.cellSize * 0.75f);
-                    data.rubbles.push_back(PropSpawn{center + glm::vec3(ox, 0.0f, oz), glm::vec3(0.0f, 1.0f, 0.0f),
-                                                     yawRand(eng), rubbleScaleRand(eng)});
+                    const glm::vec3 cand = center + glm::vec3(ox, 0.0f, oz);
+                    bool insideOasis = false;
+                    for (const OasisSpawn &oasis : data.oases)
+                    {
+                        const glm::vec2 d(cand.x - oasis.center.x, cand.z - oasis.center.z);
+                        const float maxR = std::max(oasis.radiusX, oasis.radiusZ) + 0.95f;
+                        if (glm::dot(d, d) < maxR * maxR)
+                        {
+                            insideOasis = true;
+                            break;
+                        }
+                    }
+                    if (!insideOasis)
+                    {
+                        data.rubbles.push_back(PropSpawn{cand, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), rubbleScaleRand(eng)});
+                    }
                 }
             }
         }
@@ -603,7 +652,9 @@ MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std:
     std::mt19937 eng(seed);
 
     const int maxSize = std::max(size.x, size.y);
-    std::uniform_int_distribution<> courtyardDis(1, std::max(1, maxSize >> 3));
+    const int minCourtyards = (maxSize >= 19) ? 2 : 1;
+    const int maxCourtyards = std::max(minCourtyards, (maxSize >= 21) ? 3 : (maxSize >> 3));
+    std::uniform_int_distribution<> courtyardDis(minCourtyards, maxCourtyards);
     const int courtyardCount = courtyardDis(eng);
 
     std::vector<Courtyard> courtyards;
@@ -617,6 +668,7 @@ MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std:
     resolveDeadEndsExitAndTreasures(data, start, eng);
     braidSpareDeadEnds(data, eng);
     populatePillarsAndBeams(data);
+    populateOases(data, courtyards, eng);
     populateProps(data, eng);
 
     return data;

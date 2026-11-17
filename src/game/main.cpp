@@ -138,6 +138,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
 
     game::MazeMapData map = game::generateMaze({21, 21}, 3.0f, {1, 1});
     game::MazeSceneHandles sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
+    renderer.resources().setPointLights(sceneHandles.pointLights);
 
     FlyCamera camera;
     camera.position = map.playerStart + glm::vec3(0.0f, 1.7f, 0.0f);
@@ -171,6 +172,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             renderer.resources().scene() = game::render::MegaScene{};
             map = game::generateMaze({21, 21}, 3.0f, {1, 1});
             sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
+            renderer.resources().setPointLights(sceneHandles.pointLights);
             camera.position = map.playerStart + glm::vec3(0.0f, 1.7f, 0.0f);
             camera.yaw = findInitialLookYaw(map);
             camera.pitch = -0.05f;
@@ -195,6 +197,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 .proj = proj,
                 .cameraPos = camera.position,
                 .nearPlane = nearZ,
+                .farPlane = farZ,
                 .elapsedTime = window.elapsedTime(),
                 .deltaTime = window.deltaTime(),
                 .frameIndex = frameCount,

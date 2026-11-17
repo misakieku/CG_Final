@@ -16,13 +16,15 @@ layout(std140, binding = 0) uniform FrameUBO
 {
     mat4 uView;
     mat4 uProj;
+    mat4 uInvProj;
     mat4 uViewProj;
     mat4 uInvViewProj;
     vec4 uCameraPos;
     vec4 uFrustumPlanes[6];
     vec4 uScreenParams;
     vec4 uTimeParams;
-    uvec4 uCounts; // x = objectCount, y = meshCount
+    uvec4 uCounts; // x = objectCount, y = meshCount, z = lightCount, w = frameIndex
+    uvec4 uClusterDims;
 };
 
 struct DrawObjectData
@@ -81,7 +83,7 @@ void main()
     }
 
     DrawObjectData obj = Objects[objId];
-    if ((obj.flags & 1u) == 0u || !isSphereInFrustum(obj.worldSphere))
+    if ((obj.flags & 1u) == 0u || (obj.flags & 8u) != 0u || !isSphereInFrustum(obj.worldSphere))
     {
         return;
     }

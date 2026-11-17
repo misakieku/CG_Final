@@ -6,7 +6,7 @@
 namespace game::render
 {
 
-/// Starter fullscreen lighting/present pass reading G-Buffer + Reversed-Z depth to the default FBO.
+/// Fullscreen clustered deferred lighting pass outputting linear HDR into RenderResources::hdrFbo().
 class CompositePass final : public IRenderPass
 {
 public:

@@ -9,9 +9,23 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 
 namespace game::render
 {
+
+inline constexpr std::uint32_t kClusterCountX = 16;
+inline constexpr std::uint32_t kClusterCountY = 9;
+inline constexpr std::uint32_t kClusterCountZ = 24;
+inline constexpr std::uint32_t kTotalClusters = kClusterCountX * kClusterCountY * kClusterCountZ;
+inline constexpr std::uint32_t kMaxLightsPerCluster = 64;
+
+/// std430-compatible point light stored in PointLightsSSBO (binding = 4).
+struct alignas(16) GpuPointLight
+{
+    glm::vec4 positionRadius{0.0f}; // xyz = world position, w = radius
+    glm::vec4 colorIntensity{1.0f}; // rgb = linear color, w = intensity
+};
 
 /// Per-frame CPU inputs passed into Renderer::renderFrame().
 struct RenderContext
@@ -20,6 +34,7 @@ struct RenderContext
     glm::mat4 proj{1.0f};
     glm::vec3 cameraPos{0.0f};
     float nearPlane = 0.1f;
+    float farPlane = 150.0f;
     float elapsedTime = 0.0f;
     float deltaTime = 0.0f;
     std::uint32_t frameIndex = 0;
@@ -27,21 +42,23 @@ struct RenderContext
     int viewportHeight = 720;
 };
 
-/// std140 UBO bound at binding = 0 across culling, G-buffer, and lighting passes.
+/// std140 UBO bound at binding = 0 across culling, G-buffer, light culling, and lighting passes.
 struct alignas(16) FrameUniforms
 {
     glm::mat4 view{1.0f};
     glm::mat4 proj{1.0f};
+    glm::mat4 invProj{1.0f};
     glm::mat4 viewProj{1.0f};
     glm::mat4 invViewProj{1.0f};
     glm::vec4 cameraPos{0.0f};
     std::array<glm::vec4, 6> frustumPlanes{};
     glm::vec4 screenParams{0.0f}; // x=w, y=h, z=1/w, w=1/h
-    glm::vec4 timeParams{0.0f};   // x=time, y=dt, z=near, w=0
+    glm::vec4 timeParams{0.0f};   // x=time, y=dt, z=near, w=far
     glm::uvec4 counts{0u};        // x=objectCount, y=meshCount, z=lightCount, w=frameIndex
+    glm::uvec4 clusterDims{kClusterCountX, kClusterCountY, kClusterCountZ, kMaxLightsPerCluster};
 };
 
-/// Shared GPU render targets, FBO bundles, scene buffers, and material array owned by Renderer.
+/// Shared GPU render targets, FBO bundles, scene buffers, clustered light buffers, and material array owned by Renderer.
 class RenderResources
 {
 public:
@@ -52,13 +69,19 @@ public:
     RenderResources &operator=(const RenderResources &) = delete;
 
     void onResize(int width, int height);
-    void updateFrameUniforms(const RenderContext &ctx, std::uint32_t lightCount = 0);
+    void setPointLights(std::span<const GpuPointLight> lights);
+    void updateFrameUniforms(const RenderContext &ctx);
     void drawFullscreenTriangle() const noexcept;
 
     [[nodiscard]] MegaScene &scene() noexcept { return m_scene; }
     [[nodiscard]] const MegaScene &scene() const noexcept { return m_scene; }
 
     [[nodiscard]] const GpuBuffer &frameUbo() const noexcept { return m_frameUbo; }
+    [[nodiscard]] const GpuBuffer &lightsSSBO() const noexcept { return m_lightsSSBO; }
+    [[nodiscard]] const GpuBuffer &clusterCountsSSBO() const noexcept { return m_clusterCountsSSBO; }
+    [[nodiscard]] const GpuBuffer &clusterIndicesSSBO() const noexcept { return m_clusterIndicesSSBO; }
+    [[nodiscard]] std::uint32_t lightCount() const noexcept { return m_lightCount; }
+
     [[nodiscard]] const gl::Texture &gbuffer0() const noexcept { return m_gbuffer0; }
     [[nodiscard]] const gl::Texture &gbuffer1() const noexcept { return m_gbuffer1; }
     [[nodiscard]] const gl::Texture &depthTex() const noexcept { return m_depthTex; }
@@ -80,6 +103,11 @@ private:
 
     MegaScene m_scene;
     GpuBuffer m_frameUbo;
+
+    GpuBuffer m_lightsSSBO;
+    GpuBuffer m_clusterCountsSSBO;
+    GpuBuffer m_clusterIndicesSSBO;
+    std::uint32_t m_lightCount = 0;
 
     gl::Texture m_gbuffer0; // RGBA8: Albedo.rgb + AO
     gl::Texture m_gbuffer1; // RGBA16F: WorldNormal.xyz + Roughness
