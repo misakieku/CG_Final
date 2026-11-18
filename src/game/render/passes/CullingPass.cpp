@@ -5,7 +5,8 @@
 namespace game::render
 {
 
-CullingPass::CullingPass(const std::filesystem::path &shaderDir)
+CullingPass::CullingPass(const std::filesystem::path &shaderDir, bool cullShadow)
+    : m_cullShadow(cullShadow)
 {
     reloadShaders(shaderDir);
 }
@@ -29,6 +30,7 @@ void CullingPass::execute(const RenderContext &ctx, RenderResources &res)
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
     m_cullShader.use();
+    m_cullShader.setInt("uCullShadow", m_cullShadow ? 1 : 0);
     res.frameUbo().bindBase(GL_UNIFORM_BUFFER, 0);
     scene.bindSceneBuffers(0, 1, 2, 3);
 

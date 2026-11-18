@@ -8,8 +8,43 @@ in vec2 vUV;
 layout(binding = 0) uniform sampler2D uGBuffer0; // Albedo.rgb + AO
 layout(binding = 1) uniform sampler2D uGBuffer1; // Normal.xyz + Roughness
 layout(binding = 2) uniform sampler2D uDepthTex; // Reversed-Z [0, 1]
+layout(binding = 3) uniform sampler2DShadow uShadowMap;
 
 out vec4 FragColor;
+
+float sampleDirectionalShadow(vec3 worldPos, vec3 N, float NdotL)
+{
+    if (uShadowParams.z < 0.5 || NdotL <= 0.0)
+    {
+        return 0.0;
+    }
+
+    vec3 biasedPos = worldPos + N * (0.045 * (1.0 - NdotL) + 0.015);
+    vec4 sc = uLightViewProj * vec4(biasedPos, 1.0);
+    sc.xyz /= sc.w;
+
+    vec2 uv = sc.xy * 0.5 + 0.5;
+    float refZ = sc.z;
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || refZ <= 0.0 || refZ >= 1.0)
+    {
+        return 1.0;
+    }
+
+    float texelScale = uShadowParams.x * 1.25;
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y)
+    {
+        for (int x = -1; x <= 1; ++x)
+        {
+            vec2 offset = vec2(float(x), float(y)) * texelScale;
+            sum += texture(uShadowMap, vec3(uv + offset, refZ));
+        }
+    }
+
+    float edge = max(abs(sc.x), abs(sc.y));
+    float fade = smoothstep(0.88, 1.0, edge);
+    return mix(sum / 9.0, 1.0, fade);
+}
 
 void main()
 {
@@ -33,11 +68,13 @@ void main()
     float shininess = mix(128.0, 10.0, roughness * roughness);
     float specScale = (1.0 - roughness) * 0.55;
 
-    // Cool night moonlight + subtle ambient
+    // Shadowed cool night moonlight + subtle deep ambient fill
     vec3 moonH = normalize(kMoonDir + V);
     float moonNdotL = max(dot(N, kMoonDir), 0.0);
     float moonSpec = pow(max(dot(N, moonH), 0.0), shininess) * specScale;
-    vec3 lighting = albedo * vec3(0.04, 0.05, 0.08) * ao + (albedo * moonNdotL + vec3(moonSpec)) * kMoonColor * 0.65;
+    float moonShadow = sampleDirectionalShadow(worldPos, N, moonNdotL);
+    vec3 lighting = albedo * vec3(0.024, 0.030, 0.046) * ao
+                  + (albedo * moonNdotL + vec3(moonSpec)) * kMoonColor * (0.78 * moonShadow);
 
     // Clustered point lights
     uint clusterId = computeClusterId(vUV, worldPos);

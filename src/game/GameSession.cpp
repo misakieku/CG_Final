@@ -383,7 +383,7 @@ void GameSession::updateWorldInteractions(float dt, float elapsedTime, render::R
     render::MegaScene &scene = resources.scene();
     const glm::vec2 playerXZ(m_position.x, m_position.z);
 
-    // 1. Rotate uncollected treasures & detect pickup
+    // Rotate uncollected treasures & detect pickup
     for (std::size_t i = 0; i < m_handles.treasureObjectIds.size(); ++i)
     {
         if (m_collected[i] != 0)
@@ -421,7 +421,7 @@ void GameSession::updateWorldInteractions(float dt, float elapsedTime, render::R
         }
     }
 
-    // 2. Spin exit crystal & handle exit unlock/win check
+    // Spin exit crystal & handle exit unlock/win check
     const bool allCollected = (m_collectedCount >= totalTreasures());
     const float exitYaw = elapsedTime * (allCollected ? 2.4f : 0.8f);
     const float exitBob = allCollected ? (std::sin(elapsedTime * 3.0f) * 0.08f) : 0.0f;
@@ -471,7 +471,7 @@ void GameSession::renderHud(int viewportWidth, int viewportHeight, float fps) co
     const int total = totalTreasures();
     const bool allCollected = (m_collectedCount >= total);
 
-    // 1. Top-left compact HUD status card
+    // Top-left compact HUD status card
     constexpr ImGuiWindowFlags kOverlayFlags =
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
@@ -512,7 +512,7 @@ void GameSession::renderHud(int viewportWidth, int viewportHeight, float fps) co
     }
     ImGui::End();
 
-    // 2. Top-right Fog-of-War Minimap (scales proportionally with window height/width)
+    // Top-right Fog-of-War Minimap (scales proportionally with window height/width)
     const float mapSide = m_minimapExpanded ? std::clamp(minDim * 0.72f, 320.0f, 1200.0f) : std::clamp(minDim * 0.30f, 190.0f, 680.0f);
     ImGui::SetNextWindowPos(ImVec2(static_cast<float>(viewportWidth) - mapSide - margin, margin), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(mapSide, mapSide), ImGuiCond_Always);
@@ -621,7 +621,7 @@ void GameSession::renderHud(int viewportWidth, int viewportHeight, float fps) co
     ImGui::End();
     ImGui::PopStyleVar();
 
-    // 3. Victory banner
+    // Victory banner
     if (m_won)
     {
         ImGui::SetNextWindowPos(ImVec2(static_cast<float>(viewportWidth) * 0.5f, static_cast<float>(viewportHeight) * 0.42f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));

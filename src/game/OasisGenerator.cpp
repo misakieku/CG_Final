@@ -515,26 +515,26 @@ void appendReedClump(MeshBuilder &mb, glm::vec3 center, int bladeCount, std::mt1
     }
 }
 
-[[nodiscard]] std::uint32_t buildFoliageMesh(render::MegaScene &scene, const PolarContour &contour, const PalmCrownInfo &palm, std::mt19937 &rng)
+[[nodiscard]] std::uint32_t buildFoliageMesh(render::MegaScene &scene, const PolarContour &contour, const PalmCrownInfo &palm, std::mt19937 &rng, const OasisGenDesc &desc)
 {
     MeshBuilder mb;
 
-    // 1. Main arched outer palm fronds + 3 steeper inner crown fronds
-    constexpr int kOuterFronds = 7;
-    for (int f = 0; f < kOuterFronds; ++f)
+    // Main arched outer palm fronds + steeper inner crown fronds
+    const int outerFronds = std::max(0, desc.outerFronds);
+    for (int f = 0; f < outerFronds; ++f)
     {
-        const float yaw = kTwoPi * (static_cast<float>(f) / static_cast<float>(kOuterFronds)) + 0.18f * std::sin(static_cast<float>(f) * 2.1f);
+        const float yaw = kTwoPi * (static_cast<float>(f) / static_cast<float>(outerFronds)) + 0.18f * std::sin(static_cast<float>(f) * 2.1f);
         const float len = 2.25f + 0.30f * static_cast<float>(f % 2);
         appendPalmFrond(mb, palm.crownPos, yaw, 0.62f, len, 0.48f, 1.15f);
     }
-    constexpr int kInnerFronds = 3;
-    for (int f = 0; f < kInnerFronds; ++f)
+    const int innerFronds = std::max(0, desc.innerFronds);
+    for (int f = 0; f < innerFronds; ++f)
     {
-        const float yaw = kTwoPi * (static_cast<float>(f) / static_cast<float>(kInnerFronds)) + 0.55f;
+        const float yaw = kTwoPi * (static_cast<float>(f) / static_cast<float>(innerFronds)) + 0.55f;
         appendPalmFrond(mb, palm.crownPos + glm::vec3(0.0f, 0.06f, 0.0f), yaw, 0.92f, 1.65f, 0.36f, 0.45f);
     }
 
-    // 2. Tropical broad-leaf fern rosettes near palm base and shore rocks
+    // Tropical broad-leaf fern rosettes near palm base and shore rocks
     appendFernRosette(mb, palm.rootPos + glm::vec3(0.28f, 0.0f, 0.16f), 8, 0.95f, rng);
     appendFernRosette(mb, palm.rootPos + glm::vec3(-0.32f, 0.0f, -0.22f), 7, 0.82f, rng);
     for (int k = 0; k < 3; ++k)
@@ -544,12 +544,14 @@ void appendReedClump(MeshBuilder &mb, glm::vec3 center, int bladeCount, std::mt1
         appendFernRosette(mb, pos, 6, 0.72f, rng);
     }
 
-    // 3. Water-edge reeds right along the damp inner margin
-    for (int r = 0; r < 3; ++r)
+    // Water-edge reeds right along the damp inner margin
+    const int reedClumps = std::max(0, desc.reedClumps);
+    const int reedsPerClump = std::max(0, desc.reedsPerClump);
+    for (int r = 0; r < reedClumps; ++r)
     {
-        const float angle = kTwoPi * (static_cast<float>(r) / 3.0f) + 0.35f;
+        const float angle = kTwoPi * (static_cast<float>(r) / static_cast<float>(reedClumps)) + 0.35f;
         const glm::vec3 pos = contour.pointAt(angle, 0.88f, 0.08f);
-        appendReedClump(mb, pos, 8, rng);
+        appendReedClump(mb, pos, reedsPerClump, rng);
     }
 
     return scene.registerMesh(mb.vertices, mb.indices);
@@ -557,13 +559,21 @@ void appendReedClump(MeshBuilder &mb, glm::vec3 center, int bladeCount, std::mt1
 
 } // namespace
 
-void buildMazeOases(const MazeMapData &map, render::MegaScene &scene, std::span<const std::uint32_t> rockMeshes, std::uint32_t emberMeshId, const OasisMaterialIds &materials, std::vector<render::GpuPointLight> &pointLights)
+void buildMazeOases(const MazeMapData &map, render::MegaScene &scene, std::span<const std::uint32_t> rockMeshes, std::uint32_t emberMeshId, const OasisMaterialIds &materials, std::vector<render::GpuPointLight> &pointLights, const OasisGenDesc &desc)
 {
+    if (!desc.enabled)
+    {
+        return;
+    }
+
+    const float rockMin = std::max(0.05f, desc.shoreRockScaleMin);
+    const float rockMax = std::max(rockMin, desc.shoreRockScaleMax);
+
     for (const OasisSpawn &oasis : map.oases)
     {
         std::mt19937 rng(oasis.seed);
         std::uniform_real_distribution<float> phaseDist(0.0f, kTwoPi);
-        std::uniform_real_distribution<float> rockScaleDist(0.22f, 0.52f);
+        std::uniform_real_distribution<float> rockScaleDist(rockMin, rockMax);
 
         const PolarContour contour{
             .radiusX = oasis.radiusX,
@@ -575,26 +585,26 @@ void buildMazeOases(const MazeMapData &map, render::MegaScene &scene, std::span<
 
         const glm::mat4 oasisModel = makeLocalTransform(oasis.center, oasis.yaw, glm::vec3(1.0f));
 
-        // 1. Terraced sand bank + transparent depth-aware desert spring water
+        // Terraced sand bank + transparent depth-aware desert spring water
         const std::uint32_t basinMeshId = buildSandBasinMesh(scene, contour);
         const std::uint32_t waterMeshId = buildWaterSurfaceMesh(scene, contour);
         scene.addObject(basinMeshId, materials.sandBank, oasisModel);
         scene.addObject(waterMeshId, materials.waterSurface, oasisModel, render::kObjectVisibleFlag | render::kObjectWaterFlag);
 
-        // 2. Curved leaning palm tree + coconuts + wind-swaying serrated fronds & ferns
+        // Curved leaning palm tree + coconuts + wind-swaying serrated fronds & ferns
         const PalmCrownInfo palm = buildPalmTrunkAndCoconuts(scene, contour, rng);
-        const std::uint32_t foliageMeshId = buildFoliageMesh(scene, contour, palm, rng);
+        const std::uint32_t foliageMeshId = buildFoliageMesh(scene, contour, palm, rng, desc);
         scene.addObject(palm.trunkMeshId, materials.palmBark, oasisModel);
         scene.addObject(foliageMeshId, materials.tropicalFoliage, oasisModel, render::kObjectVisibleFlag | render::kObjectWindSwayFlag);
 
-        // 3. Shoreline rock ring (clustered heavier near palm base)
-        if (!rockMeshes.empty())
+        // Shoreline rock ring (clustered heavier near palm base)
+        const int shoreRocks = std::max(0, desc.shoreRockCount);
+        if (!rockMeshes.empty() && shoreRocks > 0)
         {
             const std::uint32_t rockFlags = render::kObjectVisibleFlag | render::kObjectWorldUVFlag;
-            constexpr int kShoreRocks = 14;
-            for (int i = 0; i < kShoreRocks; ++i)
+            for (int i = 0; i < shoreRocks; ++i)
             {
-                const float angle = kTwoPi * (static_cast<float>(i) / static_cast<float>(kShoreRocks)) + phaseDist(rng) * 0.08f;
+                const float angle = kTwoPi * (static_cast<float>(i) / static_cast<float>(shoreRocks)) + phaseDist(rng) * 0.08f;
                 const glm::vec3 localPos = contour.pointAt(angle, 0.99f + 0.12f * static_cast<float>(i % 2), 0.14f);
                 const float distToPalm = glm::length(glm::vec2(localPos.x - palm.rootPos.x, localPos.z - palm.rootPos.z));
                 const float scaleBoost = (distToPalm < 1.25f) ? 1.35f : 1.0f;
@@ -604,14 +614,17 @@ void buildMazeOases(const MazeMapData &map, render::MegaScene &scene, std::span<
             }
         }
 
-        // 4. Warm camp ember crystal tucked by the palm trunk so the oasis catches dramatic warm highlights
-        const glm::vec3 worldPalmRoot = glm::vec3(oasisModel * glm::vec4(palm.rootPos, 1.0f));
-        const glm::vec3 emberWorld = worldPalmRoot + glm::normalize(oasis.center - worldPalmRoot) * 0.45f + glm::vec3(0.0f, 0.22f, 0.0f);
-        scene.addObject(emberMeshId, materials.warmEmber, makeLocalTransform(emberWorld, 0.5f, glm::vec3(0.18f, 0.24f, 0.18f)));
-        pointLights.push_back(render::GpuPointLight{
-            .positionRadius = glm::vec4(emberWorld + glm::vec3(0.0f, 0.35f, 0.0f), 7.2f),
-            .colorIntensity = glm::vec4(1.0f, 0.64f, 0.28f, 2.5f),
-        });
+        // Warm camp ember crystal tucked by the palm trunk so the oasis catches dramatic warm highlights
+        if (desc.enableEmberLight)
+        {
+            const glm::vec3 worldPalmRoot = glm::vec3(oasisModel * glm::vec4(palm.rootPos, 1.0f));
+            const glm::vec3 emberWorld = worldPalmRoot + glm::normalize(oasis.center - worldPalmRoot) * 0.45f + glm::vec3(0.0f, 0.22f, 0.0f);
+            scene.addObject(emberMeshId, materials.warmEmber, makeLocalTransform(emberWorld, 0.5f, glm::vec3(0.18f, 0.24f, 0.18f)));
+            pointLights.push_back(render::GpuPointLight{
+                .positionRadius = glm::vec4(emberWorld + glm::vec3(0.0f, 0.35f, 0.0f), desc.emberLight.radius),
+                .colorIntensity = glm::vec4(desc.emberLight.color, desc.emberLight.intensity),
+            });
+        }
     }
 }
 

@@ -206,7 +206,7 @@ void openCourtyard(MazeMapData &data, std::mt19937 &eng, const std::vector<Court
     return dist;
 }
 
-void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng)
+void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng, const MazeGenDesc &desc)
 {
     const std::vector<int> dist = computeBfsDistances(data, start);
 
@@ -267,7 +267,7 @@ void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::m
 
     // Pick well-spaced dead ends (excluding Exit and cells too close to start) for SOR treasures
     std::vector<glm::ivec2> treasureCandidates;
-    const int minTreasureSteps = std::max(4, maxDist / 4);
+    const int minTreasureSteps = std::max(desc.minTreasureStartSteps, maxDist / 4);
     for (const glm::ivec2 cell : data.deadEnd)
     {
         if (cell == exitCell)
@@ -292,11 +292,12 @@ void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::m
     }
 
     std::shuffle(treasureCandidates.begin(), treasureCandidates.end(), eng);
-    constexpr std::size_t kMaxTreasures = 5;
+    const std::size_t maxTreasures = static_cast<std::size_t>(std::max(0, desc.maxTreasures));
+    const int minSep = std::max(0, desc.minTreasureSeparation);
     std::vector<glm::ivec2> chosenCells;
     for (const glm::ivec2 cell : treasureCandidates)
     {
-        if (chosenCells.size() >= kMaxTreasures)
+        if (chosenCells.size() >= maxTreasures)
         {
             break;
         }
@@ -304,7 +305,7 @@ void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::m
         for (const glm::ivec2 picked : chosenCells)
         {
             const int manhattan = std::abs(cell.x - picked.x) + std::abs(cell.y - picked.y);
-            if (manhattan < 4)
+            if (manhattan < minSep)
             {
                 tooClose = true;
                 break;
@@ -317,9 +318,10 @@ void resolveDeadEndsExitAndTreasures(MazeMapData &data, glm::ivec2 start, std::m
     }
 
     // Top up if spacing filter left fewer than 3 treasures on smaller maps
+    const std::size_t minFallback = std::min(maxTreasures, std::min<std::size_t>(3, treasureCandidates.size()));
     for (const glm::ivec2 cell : treasureCandidates)
     {
-        if (chosenCells.size() >= std::min<std::size_t>(3, treasureCandidates.size()))
+        if (chosenCells.size() >= minFallback)
         {
             break;
         }
@@ -411,7 +413,7 @@ void braidSpareDeadEnds(MazeMapData &data, std::mt19937 &eng, float braidRatio =
     });
 }
 
-void populatePillarsAndBeams(MazeMapData &data)
+void populatePillarsAndBeams(MazeMapData &data, const MazeGenDesc &desc)
 {
     // Corner pillars at grid vertices shared by 1 wall (outer corner) or 3 walls (inner corner)
     for (int vy = 1; vy < data.size.y; ++vy)
@@ -437,25 +439,31 @@ void populatePillarsAndBeams(MazeMapData &data)
         }
     }
 
-    // Overhead corridor ceiling beams: scan contiguous straight passages and space beams evenly
-    constexpr int kMinRunCells = 2;
-    constexpr float kEndMargin = 1.65f;
-    constexpr float kBeamSpacing = 4.60f;
+    if (!desc.enableBeams)
+    {
+        return;
+    }
 
+    // Overhead corridor ceiling beams: scan contiguous straight passages and space beams evenly
+    const int minRunCells = std::max(1, desc.minBeamRunCells);
+    const float endMargin = std::max(0.0f, desc.beamEndMargin);
+    const float beamSpacing = std::max(0.5f, desc.beamSpacing);
+
+    const float minSepSq = (beamSpacing * 0.75f) * (beamSpacing * 0.75f);
     auto emitRunBeams = [&](int startIdx, int endIdx, bool verticalRun, int fixedCoord)
     {
         const int runCells = endIdx - startIdx + 1;
-        if (runCells < kMinRunCells)
+        if (runCells < minRunCells)
         {
             return;
         }
 
         const float spanStart = static_cast<float>(startIdx) * data.cellSize;
         const float spanEnd = static_cast<float>(endIdx + 1) * data.cellSize;
-        const float usableStart = spanStart + kEndMargin;
-        const float usableEnd = spanEnd - kEndMargin;
+        const float usableStart = spanStart + endMargin;
+        const float usableEnd = spanEnd - endMargin;
         const float usableLen = std::max(0.0f, usableEnd - usableStart);
-        const int beamCount = 1 + static_cast<int>(std::floor(usableLen / kBeamSpacing));
+        const int beamCount = 1 + static_cast<int>(std::floor(usableLen / beamSpacing));
         const float fixedWorld = (static_cast<float>(fixedCoord) + 0.5f) * data.cellSize;
         const float yaw = verticalRun ? 0.0f : 1.5707963f;
 
@@ -465,6 +473,20 @@ void populatePillarsAndBeams(MazeMapData &data)
                                          ? (spanStart + spanEnd) * 0.5f
                                          : (usableStart + (static_cast<float>(i) / static_cast<float>(beamCount - 1)) * usableLen);
             const glm::vec3 pos = verticalRun ? glm::vec3(fixedWorld, 0.0f, coordWorld) : glm::vec3(coordWorld, 0.0f, fixedWorld);
+            bool tooClose = false;
+            for (const PropSpawn &existing : data.ceilingBeams)
+            {
+                const glm::vec2 d(pos.x - existing.position.x, pos.z - existing.position.z);
+                if (glm::dot(d, d) < minSepSq)
+                {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose)
+            {
+                continue;
+            }
             data.ceilingBeams.push_back(PropSpawn{
                 .position = pos,
                 .normal = glm::vec3(0.0f, -1.0f, 0.0f),
@@ -525,26 +547,31 @@ void populatePillarsAndBeams(MazeMapData &data)
     }
 }
 
-void populateOases(MazeMapData &data, const std::vector<Courtyard> &courtyards, std::mt19937 &eng)
+void populateOases(MazeMapData &data, const std::vector<Courtyard> &courtyards, std::mt19937 &eng, const MazeGenDesc &desc)
 {
+    if (!desc.enableOases)
+    {
+        return;
+    }
+
     std::uniform_real_distribution<float> pushDist(0.55f, 0.95f);
     std::uniform_real_distribution<float> yawRand(0.0f, 6.2831853f);
 
-    constexpr float kRadiusX = 2.15f;
-    constexpr float kRadiusZ = 1.60f;
-    constexpr float kSafeFootprintMargin = 4.70f; // ~3.1m oasis outer bank + 1.6m walkable shore margin
+    const float radiusX = std::max(0.5f, desc.oasisRadiusX);
+    const float radiusZ = std::max(0.5f, desc.oasisRadiusZ);
+    const float safeFootprintMargin = std::max(radiusX, radiusZ) + 2.55f;
 
     for (const Courtyard &c : courtyards)
     {
-        if (c.size.x < 5 || c.size.y < 5)
+        if (c.size.x < desc.minOasisCourtyardSize || c.size.y < desc.minOasisCourtyardSize)
         {
             continue;
         }
 
         const float halfW = static_cast<float>(c.size.x) * data.cellSize * 0.5f;
         const float halfH = static_cast<float>(c.size.y) * data.cellSize * 0.5f;
-        const float maxOffX = std::max(0.0f, halfW - kSafeFootprintMargin);
-        const float maxOffZ = std::max(0.0f, halfH - kSafeFootprintMargin);
+        const float maxOffX = std::max(0.0f, halfW - safeFootprintMargin);
+        const float maxOffZ = std::max(0.0f, halfH - safeFootprintMargin);
 
         const float angle = yawRand(eng);
         const float push = pushDist(eng);
@@ -552,22 +579,29 @@ void populateOases(MazeMapData &data, const std::vector<Courtyard> &courtyards, 
         const float centerZ = (static_cast<float>(c.start.y) + static_cast<float>(c.size.y) * 0.5f) * data.cellSize + std::sin(angle) * maxOffZ * push;
         data.oases.push_back(OasisSpawn{
             .center = glm::vec3(centerX, 0.0f, centerZ),
-            .radiusX = kRadiusX,
-            .radiusZ = kRadiusZ,
+            .radiusX = radiusX,
+            .radiusZ = radiusZ,
             .yaw = yawRand(eng),
             .seed = eng(),
         });
     }
 }
 
-void populateProps(MazeMapData &data, std::mt19937 &eng)
+void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc)
 {
     std::uniform_real_distribution<float> unitRand(0.0f, 1.0f);
     std::uniform_real_distribution<float> yawRand(0.0f, 6.2831853f);
-    std::uniform_real_distribution<float> rubbleScaleRand(0.10f, 0.26f);
+    const float rubbleMin = std::max(0.02f, desc.rubbleScaleMin);
+    const float rubbleMax = std::max(rubbleMin, desc.rubbleScaleMax);
+    std::uniform_real_distribution<float> rubbleScaleRand(rubbleMin, rubbleMax);
+
+    const float candleMin = std::max(0.1f, desc.candleScaleMin);
+    const float candleMax = std::max(candleMin, desc.candleScaleMax);
+    std::uniform_real_distribution<float> candleScaleRand(candleMin, candleMax);
 
     const float halfCell = data.cellSize * 0.5f;
-    const float minTorchDistSq = (data.cellSize * 1.45f) * (data.cellSize * 1.45f);
+    const float minTorchDist = data.cellSize * std::max(0.25f, desc.torchMinSpacingCells);
+    const float minTorchDistSq = minTorchDist * minTorchDist;
 
     auto isTreasureCell = [&](glm::ivec2 cell) -> bool {
         const glm::vec3 center = data.cellCenterWorld(cell);
@@ -622,42 +656,53 @@ void populateProps(MazeMapData &data, std::mt19937 &eng)
                 const glm::vec3 wallFace = center + outward * halfCell;
                 const float wallYaw = std::atan2(inward.x, inward.z);
 
-                // Wall torches (spaced every ~1.5 cells, including start cell and shrines)
-                if (((x * 3 + y * 5) % 2 == 0) || shrineOrExit || cell == data.startCell)
+                // Wall torches (spaced by torchMinSpacingCells, always allowed at start cell & shrines)
+                if (desc.enableTorches)
                 {
-                    const glm::vec3 torchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, 2.1f, 0.0f);
-                    if (!hasNearbyTorch(torchPos))
+                    const bool passChecker = !desc.torchCheckerFilter || (((x * 3 + y * 5) % 2) == 0);
+                    const bool guaranteedSpot = shrineOrExit || cell == data.startCell;
+                    if (guaranteedSpot || (passChecker && unitRand(eng) < desc.torchWallChance))
                     {
-                        data.wallTorches.push_back(PropSpawn{torchPos, inward, wallYaw, 1.0f});
+                        const glm::vec3 torchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
+                        if (!hasNearbyTorch(torchPos))
+                        {
+                            data.wallTorches.push_back(PropSpawn{torchPos, inward, wallYaw, 1.0f});
+                        }
                     }
                 }
 
                 // Floor candles along walls (guaranteed around treasure shrines & exit)
-                const int candleCount = shrineOrExit ? 2 : (unitRand(eng) < 0.28f ? 1 : 0);
-                for (int c = 0; c < candleCount; ++c)
+                if (desc.enableCandles)
                 {
-                    const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.55f);
-                    const float depthOffset = 0.25f + unitRand(eng) * 0.18f;
-                    const glm::vec3 candlePos = wallFace + inward * depthOffset + tangent * sideOffset;
-                    data.candles.push_back(
-                        PropSpawn{candlePos, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), 0.85f + 0.3f * unitRand(eng)});
+                    const int candleCount = shrineOrExit ? std::max(0, desc.shrineCandleClusters) : (unitRand(eng) < desc.candleWallChance ? 1 : 0);
+                    for (int c = 0; c < candleCount; ++c)
+                    {
+                        const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.55f);
+                        const float depthOffset = 0.25f + unitRand(eng) * 0.18f;
+                        const glm::vec3 candlePos = wallFace + inward * depthOffset + tangent * sideOffset;
+                        data.candles.push_back(
+                            PropSpawn{candlePos, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), candleScaleRand(eng)});
+                    }
                 }
 
                 // Wall-edge rubble keeping the center path clear
-                const int rubbleCount = 1 + (unitRand(eng) < 0.55f ? 1 : 0) + (kind == CellKind::Courtyard ? 1 : 0);
-                for (int r = 0; r < rubbleCount; ++r)
+                if (desc.enableRubble)
                 {
-                    const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.80f);
-                    const float depthOffset = 0.14f + unitRand(eng) * 0.42f;
-                    const glm::vec3 rubblePos = wallFace + inward * depthOffset + tangent * sideOffset;
-                    data.rubbles.push_back(
-                        PropSpawn{rubblePos, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), rubbleScaleRand(eng)});
+                    const int rubbleCount = 1 + (unitRand(eng) < desc.rubbleExtraWallChance ? 1 : 0) + (kind == CellKind::Courtyard ? 1 : 0);
+                    for (int r = 0; r < rubbleCount; ++r)
+                    {
+                        const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.80f);
+                        const float depthOffset = 0.14f + unitRand(eng) * 0.42f;
+                        const glm::vec3 rubblePos = wallFace + inward * depthOffset + tangent * sideOffset;
+                        data.rubbles.push_back(
+                            PropSpawn{rubblePos, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), rubbleScaleRand(eng)});
+                    }
                 }
             }
 
-            if (kind == CellKind::Courtyard)
+            if (desc.enableRubble && kind == CellKind::Courtyard)
             {
-                const int extraRocks = 2;
+                const int extraRocks = std::max(0, desc.courtyardExtraRocks);
                 for (int r = 0; r < extraRocks; ++r)
                 {
                     const float ox = (unitRand(eng) - 0.5f) * (data.cellSize * 0.75f);
@@ -686,17 +731,14 @@ void populateProps(MazeMapData &data, std::mt19937 &eng)
 
 } // namespace
 
-MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std::uint32_t seed)
+MazeMapData generateMaze(const MazeGenDesc &desc)
 {
-    size.x = std::max(7, size.x | 1);
-    size.y = std::max(7, size.y | 1);
-
-    start.x = std::clamp(start.x | 1, 1, size.x - 2);
-    start.y = std::clamp(start.y | 1, 1, size.y - 2);
+    glm::ivec2 size{std::max(7, desc.size.x | 1), std::max(7, desc.size.y | 1)};
+    glm::ivec2 start{std::clamp(desc.start.x | 1, 1, size.x - 2), std::clamp(desc.start.y | 1, 1, size.y - 2)};
 
     MazeMapData data{
         .size = size,
-        .cellSize = cellSize,
+        .cellSize = desc.cellSize,
         .cells = std::vector<CellKind>(static_cast<std::size_t>(size.x * size.y), CellKind::Wall),
         .startCell = start,
         .exitCell = start,
@@ -705,6 +747,7 @@ MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std:
     };
     data.playerStart = data.cellCenterWorld(start);
 
+    std::uint32_t seed = desc.seed;
     if (seed == 0)
     {
         std::random_device rd;
@@ -713,8 +756,9 @@ MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std:
     std::mt19937 eng(seed);
 
     const int maxSize = std::max(size.x, size.y);
-    const int minCourtyards = (maxSize >= 19) ? 2 : 1;
-    const int maxCourtyards = std::max(minCourtyards, (maxSize >= 21) ? 3 : (maxSize >> 3));
+    const int minCourtyards = (desc.minCourtyards >= 0) ? desc.minCourtyards : ((maxSize >= 19) ? 2 : 1);
+    const int autoMax = std::max(minCourtyards, (maxSize >= 21) ? 3 : (maxSize >> 3));
+    const int maxCourtyards = (desc.maxCourtyards >= 0) ? std::max(minCourtyards, desc.maxCourtyards) : autoMax;
     std::uniform_int_distribution<> courtyardDis(minCourtyards, maxCourtyards);
     const int courtyardCount = courtyardDis(eng);
 
@@ -726,11 +770,11 @@ MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std:
 
     fillCorridor(data, start, eng);
     openCourtyard(data, eng, courtyards);
-    resolveDeadEndsExitAndTreasures(data, start, eng);
-    braidSpareDeadEnds(data, eng);
-    populatePillarsAndBeams(data);
-    populateOases(data, courtyards, eng);
-    populateProps(data, eng);
+    resolveDeadEndsExitAndTreasures(data, start, eng, desc);
+    braidSpareDeadEnds(data, eng, std::clamp(desc.braidRatio, 0.0f, 1.0f));
+    populatePillarsAndBeams(data, desc);
+    populateOases(data, courtyards, eng, desc);
+    populateProps(data, eng, desc);
 
     return data;
 }

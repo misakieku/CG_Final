@@ -90,7 +90,58 @@ struct MazeMapData
     }
 };
 
+struct MazeGenDesc
+{
+    glm::ivec2 size{21, 21};
+    float cellSize = 3.0f;
+    glm::ivec2 start{1, 1};
+    std::uint32_t seed = 0; // 0 uses std::random_device
+
+    // Courtyard & loop topology (< 0 auto-scales with map size)
+    int minCourtyards = -1;
+    int maxCourtyards = -1;
+    float braidRatio = 0.38f;
+
+    // Treasures
+    int maxTreasures = 5;
+    int minTreasureSeparation = 4;
+    int minTreasureStartSteps = 4;
+
+    // Overhead stone ceiling beams / corridor arches
+    bool enableBeams = true;
+    int minBeamRunCells = 2;
+    float beamEndMargin = 1.65f;
+    float beamSpacing = 9.20f;
+
+    // Courtyard desert oasis footprints
+    bool enableOases = false;
+    int minOasisCourtyardSize = 5;
+    float oasisRadiusX = 2.15f;
+    float oasisRadiusZ = 1.60f;
+
+    // Wall torches
+    bool enableTorches = true;
+    float torchMinSpacingCells = 1.45f;
+    bool torchCheckerFilter = true;
+    float torchWallChance = 1.0f;
+    float torchMountHeight = 2.1f;
+
+    // Candle cluster anchors along walls
+    bool enableCandles = true;
+    float candleWallChance = 0.28f;
+    int shrineCandleClusters = 2;
+    float candleScaleMin = 0.85f;
+    float candleScaleMax = 1.15f;
+
+    // Floor rubble rocks
+    bool enableRubble = true;
+    float rubbleExtraWallChance = 0.55f;
+    int courtyardExtraRocks = 2;
+    float rubbleScaleMin = 0.10f;
+    float rubbleScaleMax = 0.26f;
+};
+
 /// Generates a connected odd-grid dungeon maze with open-sky courtyards, dead-end treasures, pillars, torches, candles, and rubble.
-MazeMapData generateMaze(glm::ivec2 size, float cellSize, glm::ivec2 start, std::uint32_t seed = 0);
+MazeMapData generateMaze(const MazeGenDesc &desc = {});
 
 } // namespace game

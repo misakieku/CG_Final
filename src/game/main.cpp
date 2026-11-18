@@ -21,8 +21,6 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -106,8 +104,11 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     const std::filesystem::path shaderDir = std::filesystem::exists(exeShaderDir) ? exeShaderDir : (std::filesystem::current_path() / "shaders");
     game::render::Renderer renderer(window.width(), window.height(), shaderDir);
 
-    game::MazeMapData map = game::generateMaze({21, 21}, 3.0f, {1, 1});
-    game::MazeSceneHandles sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
+    const game::MazeGenDesc mapDesc{};
+    const game::MazeSceneDesc sceneDesc{};
+
+    game::MazeMapData map = game::generateMaze(mapDesc);
+    game::MazeSceneHandles sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc);
     renderer.resources().setPointLights(sceneHandles.pointLights);
 
     game::GameSession session;
@@ -143,8 +144,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         if (window.wasKeyPressed(GLFW_KEY_R))
         {
             renderer.resources().scene() = game::render::MegaScene{};
-            map = game::generateMaze({21, 21}, 3.0f, {1, 1});
-            sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir);
+            map = game::generateMaze(mapDesc);
+            sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc);
             renderer.resources().setPointLights(sceneHandles.pointLights);
             session.reset(map, sceneHandles);
         }

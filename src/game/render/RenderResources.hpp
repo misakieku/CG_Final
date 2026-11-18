@@ -57,6 +57,9 @@ struct alignas(16) FrameUniforms
     glm::vec4 timeParams{0.0f};   // x=time, y=dt, z=near, w=far
     glm::uvec4 counts{0u};        // x=objectCount, y=meshCount, z=lightCount, w=frameIndex
     glm::uvec4 clusterDims{kClusterCountX, kClusterCountY, kClusterCountZ, kMaxLightsPerCluster};
+    glm::mat4 lightViewProj{1.0f};
+    std::array<glm::vec4, 6> shadowFrustumPlanes{};
+    glm::vec4 shadowParams{0.0f}; // x=invShadowSize, y=halfExtent, z=enabled, w=unused
 };
 
 /// Shared GPU render targets, FBO bundles, scene buffers, clustered light buffers, and material array owned by Renderer.
@@ -85,14 +88,19 @@ public:
     [[nodiscard]] const GpuBuffer &clusterIndicesSSBO() const noexcept { return m_clusterIndicesSSBO; }
     [[nodiscard]] std::uint32_t lightCount() const noexcept { return m_lightCount; }
 
+    static constexpr int kShadowMapSize = 2048;
+    static constexpr float kShadowHalfExtent = 26.0f;
+
     [[nodiscard]] const gl::Texture &gbuffer0() const noexcept { return m_gbuffer0; }
     [[nodiscard]] const gl::Texture &gbuffer1() const noexcept { return m_gbuffer1; }
     [[nodiscard]] const gl::Texture &depthTex() const noexcept { return m_depthTex; }
     [[nodiscard]] const gl::Texture &hdrTex() const noexcept { return m_hdrTex; }
+    [[nodiscard]] const gl::Texture &shadowDepthTex() const noexcept { return m_shadowDepthTex; }
 
     [[nodiscard]] const gl::Framebuffer &gbufferFbo() const noexcept { return m_gbufferFbo; }
     [[nodiscard]] const gl::Framebuffer &puddleFbo() const noexcept { return m_puddleFbo; }
     [[nodiscard]] const gl::Framebuffer &hdrFbo() const noexcept { return m_hdrFbo; }
+    [[nodiscard]] const gl::Framebuffer &shadowFbo() const noexcept { return m_shadowFbo; }
 
     [[nodiscard]] GLuint albedoArrayTexId() const noexcept { return m_albedoArrayTex; }
     [[nodiscard]] GLuint ormArrayTexId() const noexcept { return m_ormArrayTex; }
@@ -104,7 +112,7 @@ private:
     void createStarterMaterialArrays();
 
     static constexpr int kMaterialArraySize = 1024;
-    static constexpr int kMaterialArrayLayers = 8;
+    static constexpr int kMaterialArrayLayers = 9;
     static constexpr int kMaterialMipLevels = 11;
 
     int m_width = 0;
@@ -122,10 +130,12 @@ private:
     gl::Texture m_gbuffer1; // RGBA16F: WorldNormal.xyz + Roughness
     gl::Texture m_depthTex; // DEPTH_COMPONENT32F (Reversed-Z [0, 1])
     gl::Texture m_hdrTex;   // RGBA16F: Lit HDR accumulation
+    gl::Texture m_shadowDepthTex; // DEPTH_COMPONENT32F ([0, 1] linear directional shadow map)
 
     gl::Framebuffer m_gbufferFbo;
     gl::Framebuffer m_puddleFbo; // Color attachments only (no depth attached so depthTex can be sampled safely)
     gl::Framebuffer m_hdrFbo;
+    gl::Framebuffer m_shadowFbo;
 
     GLuint m_albedoArrayTex = 0;
     GLuint m_ormArrayTex = 0;

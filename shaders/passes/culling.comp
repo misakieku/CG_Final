@@ -19,11 +19,14 @@ layout(std430, binding = 3) writeonly buffer VisibleIndicesBuffer
     uint VisibleIndices[];
 };
 
+uniform int uCullShadow = 0;
+
 bool isSphereInFrustum(vec4 sphere)
 {
     for (int i = 0; i < 6; ++i)
     {
-        if (dot(uFrustumPlanes[i].xyz, sphere.xyz) + uFrustumPlanes[i].w < -sphere.w)
+        vec4 plane = (uCullShadow != 0) ? uShadowFrustumPlanes[i] : uFrustumPlanes[i];
+        if (dot(plane.xyz, sphere.xyz) + plane.w < -sphere.w)
         {
             return false;
         }

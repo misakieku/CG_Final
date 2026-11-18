@@ -88,34 +88,42 @@ struct SpatialAabbIndex
     {
         for (int x = 0; x < map.size.x; ++x)
         {
-            if (map.getCell({x, y}) != CellKind::Wall)
+            const CellKind kind = map.getCell({x, y});
+            if (kind == CellKind::Wall)
             {
-                continue;
-            }
-            bool openAdj = false;
-            for (const glm::ivec2 d : dirs)
-            {
-                if (map.isWalkable(glm::ivec2{x, y} + d))
+                bool openAdj = false;
+                for (const glm::ivec2 d : dirs)
                 {
-                    openAdj = true;
-                    break;
+                    if (map.isWalkable(glm::ivec2{x, y} + d))
+                    {
+                        openAdj = true;
+                        break;
+                    }
                 }
+                if (!openAdj)
+                {
+                    continue;
+                }
+                // Pad wall footprint slightly to clear 3D protruding chipped masonry blocks
+                constexpr float kStoneProtrusion = 0.048f;
+                const glm::vec3 minP(static_cast<float>(x) * cell - kStoneProtrusion, 0.0f, static_cast<float>(y) * cell - kStoneProtrusion);
+                spatial.addAabb({minP, minP + glm::vec3(cell + kStoneProtrusion * 2.0f, wallHeight, cell + kStoneProtrusion * 2.0f)});
             }
-            if (!openAdj)
+            else if (kind != CellKind::Courtyard)
             {
-                continue;
+                // Roof slabs allow wall-climbing vines to wrap onto and creep across the ceiling underside
+                const glm::vec3 minR(static_cast<float>(x) * cell - 0.10f, wallHeight - 0.03f, static_cast<float>(y) * cell - 0.10f);
+                spatial.addAabb({minR, glm::vec3(static_cast<float>(x + 1) * cell + 0.10f, wallHeight + 0.30f, static_cast<float>(y + 1) * cell + 0.10f)});
             }
-            const glm::vec3 minP(static_cast<float>(x) * cell, 0.0f, static_cast<float>(y) * cell);
-            spatial.addAabb({minP, minP + glm::vec3(cell, wallHeight, cell)});
         }
     }
 
-    // Corner pillars (base plinth + shaft + cap)
+    // Corner pillars (stepped base + stacked shaft + 3-tier capital)
     for (const glm::vec3 &p : map.pillars)
     {
-        spatial.addAabb({{p.x - 0.38f, 0.0f, p.z - 0.38f}, {p.x + 0.38f, 0.28f, p.z + 0.38f}});
-        spatial.addAabb({{p.x - 0.27f, 0.0f, p.z - 0.27f}, {p.x + 0.27f, wallHeight, p.z + 0.27f}});
-        spatial.addAabb({{p.x - 0.39f, wallHeight - 0.26f, p.z - 0.39f}, {p.x + 0.39f, wallHeight, p.z + 0.39f}});
+        spatial.addAabb({{p.x - 0.40f, 0.0f, p.z - 0.40f}, {p.x + 0.40f, 0.24f, p.z + 0.40f}});
+        spatial.addAabb({{p.x - 0.28f, 0.0f, p.z - 0.28f}, {p.x + 0.28f, wallHeight, p.z + 0.28f}});
+        spatial.addAabb({{p.x - 0.44f, wallHeight - 0.36f, p.z - 0.44f}, {p.x + 0.44f, wallHeight, p.z + 0.44f}});
     }
 
     // Overhead beams
@@ -193,7 +201,7 @@ struct SpatialAabbIndex
     glm::vec3 bestNormal = normal;
     bool found = false;
 
-    // 1. Floor plane y = 0 is a first-class crawling surface (creates sprawling floor runners)
+    // Floor plane y = 0 is a first-class crawling surface (creates sprawling floor runners)
     if (pos.y >= -0.05f && pos.y <= maxSnapDist)
     {
         bestDistSq = pos.y * pos.y;
@@ -202,7 +210,7 @@ struct SpatialAabbIndex
         found = true;
     }
 
-    // 2. Nearby wall, pillar, and beam AABBs (strictly win ties near wall bases so vines climb upward!)
+    // Nearby wall, pillar, and beam AABBs (strictly win ties near wall bases so vines climb upward!)
     for (const std::uint32_t boxIdx : spatial.bucketAt(pos))
     {
         const VineAabb &box = spatial.aabbs[boxIdx];
@@ -287,7 +295,7 @@ void emitIvyLeaf(ChunkMeshData &out, glm::vec3 anchor, glm::vec3 forwardDir, glm
     }
 }
 
-void emitVineChain(ChunkMeshData &out, std::span<const VineNode> nodes, std::mt19937 &rng)
+void emitVineChain(ChunkMeshData &out, std::span<const VineNode> nodes, std::mt19937 &rng, const VineGenDesc &desc)
 {
     if (nodes.size() < 2)
     {
@@ -377,12 +385,12 @@ void emitVineChain(ChunkMeshData &out, std::span<const VineNode> nodes, std::mt1
             side = glm::normalize(side);
         }
 
-        const int leavesHere = (chance(rng) < 0.65f) ? 2 : 1;
+        const int leavesHere = (chance(rng) < desc.doubleLeafChance) ? 2 : 1;
         for (int l = 0; l < leavesHere; ++l)
         {
             const float sideSign = ((static_cast<int>(i) + l) % 2 == 0) ? 1.0f : -1.0f;
             const float taper = 1.0f - 0.35f * (static_cast<float>(i) / static_cast<float>(nodes.size()));
-            const float leafSize = sizeDist(rng) * taper;
+            const float leafSize = sizeDist(rng) * taper * std::max(0.1f, desc.leafSizeScale);
             const glm::vec3 attachPos = glm::mix(nodes[i - 1].pos, nodes[i].pos, 0.25f + 0.55f * chance(rng)) +
                                         side * (sideSign * nodes[i].radius * 0.8f) + surfN * 0.015f;
             const glm::vec3 leafDir = glm::normalize(side * (sideSign * (0.75f + 0.35f * chance(rng))) +
@@ -395,7 +403,7 @@ void emitVineChain(ChunkMeshData &out, std::span<const VineNode> nodes, std::mt1
     }
 }
 
-void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::vec3 startPos, glm::vec3 startNormal, glm::vec3 startDir, glm::vec3 attractPoint, int steps, float climbBias, bool startHanging, std::mt19937 &rng, int depth)
+void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::vec3 startPos, glm::vec3 startNormal, glm::vec3 startDir, glm::vec3 attractPoint, int steps, float climbBias, bool startHanging, std::mt19937 &rng, int depth, const VineGenDesc &desc)
 {
     std::uniform_real_distribution<float> jitter(-1.0f, 1.0f);
     std::uniform_real_distribution<float> chance(0.0f, 1.0f);
@@ -409,7 +417,7 @@ void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::v
     bool hanging = startHanging;
     int hangStep = 0;
 
-    const float baseRadius = (depth == 0) ? 0.020f : 0.012f;
+    const float baseRadius = ((depth == 0) ? 0.020f : 0.012f) * std::max(0.1f, desc.stemRadiusScale);
     constexpr float stepLen = 0.16f;
     constexpr float surfaceOffset = 0.024f;
 
@@ -455,32 +463,81 @@ void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::v
 
             // Classic Ivy weighting: momentum + upward/target tendency + sinuous wander
             const float onFloor = (normal.y > 0.7f) ? 1.0f : 0.0f;
-            glm::vec3 desired = tangent * 0.68f + side * (jitter(rng) * 0.42f);
+            const float onCeiling = (normal.y < -0.7f) ? 1.0f : 0.0f;
+            glm::vec3 desired = tangent * 0.70f + side * (jitter(rng) * 0.42f);
             desired += pull * (onFloor * 0.42f);
-            desired += tangentUp * ((1.0f - onFloor) * climbBias);
+            desired += tangentUp * ((1.0f - onFloor - onCeiling) * climbBias);
 
             if (glm::dot(desired, desired) > 1e-6f)
             {
                 dir = glm::normalize(desired);
             }
+            const glm::vec3 prevPos = pos;
+            const glm::vec3 prevNormal = normal;
             pos += dir * stepLen;
 
-            // Push out of any penetrated AABBs and wrap normal around corners
-            for (const std::uint32_t boxIdx : spatial.bucketAt(pos))
+            // Multi-pass AABB push-out handles multi-object L-corners & wall-pillar junctions cleanly
+            bool hitCorner = false;
+            glm::vec3 hitNormal = normal;
+            for (int iter = 0; iter < 3; ++iter)
             {
-                if (pushOutOfAabb(spatial.aabbs[boxIdx], pos, normal, surfaceOffset))
+                bool moved = false;
+                for (const std::uint32_t boxIdx : spatial.bucketAt(pos))
                 {
-                    dir = dir - normal * glm::dot(dir, normal);
-                    if (glm::dot(dir, dir) > 1e-4f)
+                    glm::vec3 pushN(0.0f);
+                    if (pushOutOfAabb(spatial.aabbs[boxIdx], pos, pushN, surfaceOffset))
                     {
-                        dir = glm::normalize(dir);
+                        hitNormal = pushN;
+                        hitCorner = true;
+                        moved = true;
                     }
+                }
+                if (!moved)
+                {
+                    break;
                 }
             }
 
-            if (!snapToNearestSurface(spatial, pos, normal, 0.24f, surfaceOffset))
+            if (hitCorner)
+            {
+                normal = hitNormal;
+                glm::vec3 projected = dir - normal * glm::dot(dir, normal);
+                if (normal.y < -0.70f && glm::dot(projected, prevNormal) < 0.05f)
+                {
+                    // Climbing onto roof underside: turn inward away from the wall across the ceiling
+                    projected = prevNormal - normal * glm::dot(prevNormal, normal);
+                }
+                if (glm::dot(projected, projected) > 1e-4f)
+                {
+                    dir = glm::normalize(projected);
+                }
+                else
+                {
+                    // Head-on hit against a perpendicular wall/ceiling: deflect cleanly along new surface
+                    const glm::vec3 hint = (normal.y < -0.70f) ? prevNormal : (glm::vec3(0.0f, 1.0f, 0.0f) + (attractPoint - pos) * 0.35f);
+                    glm::vec3 deflect = hint - normal * glm::dot(hint, normal);
+                    if (glm::dot(deflect, deflect) <= 1e-4f)
+                    {
+                        deflect = makePerp(normal);
+                    }
+                    dir = glm::normalize(deflect);
+                }
+            }
+
+            if (!hitCorner && !snapToNearestSurface(spatial, pos, normal, 0.24f, surfaceOffset))
             {
                 hanging = true;
+            }
+
+            // Insert an intermediate corner-wrap node so chords never cut through 90-degree corners
+            if (glm::dot(prevNormal, normal) < 0.70f && !hanging)
+            {
+                const glm::vec3 sumN = prevNormal + normal;
+                const float sumLenSq = glm::dot(sumN, sumN);
+                const glm::vec3 midN = (sumLenSq > 1e-4f) ? (sumN / std::sqrt(sumLenSq)) : makePerp(normal);
+                const glm::vec3 elbowPos = glm::mix(prevPos, pos, 0.5f) + midN * (surfaceOffset * 1.4f);
+                const float elbowR = baseRadius * (1.0f - 0.68f * ((static_cast<float>(s) - 0.5f) / static_cast<float>(steps)));
+                nodes.push_back(VineNode{elbowPos, midN, elbowR, 0.0f});
             }
         }
 
@@ -498,7 +555,7 @@ void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::v
         nodes.push_back(VineNode{pos, normal, radius, hangWeight});
 
         // Frequent short lateral branches create the dense interwoven ivy mat
-        if (depth == 0 && s >= 3 && s + 5 < steps && chance(rng) < 0.28f)
+        if (depth == 0 && s >= 3 && s + 5 < steps && chance(rng) < desc.lateralBranchChance)
         {
             const glm::vec3 side = glm::cross(normal, dir);
             const float sideLenSq = glm::dot(side, side);
@@ -506,17 +563,23 @@ void growIvyBranch(const SpatialAabbIndex &spatial, ChunkMeshData &chunk, glm::v
             const float sign = (chance(rng) < 0.5f) ? 1.0f : -1.0f;
             const glm::vec3 branchDir = glm::normalize(dir * 0.55f + sideAxis * (sign * 0.85f));
             const int branchLen = 8 + static_cast<int>(chance(rng) * 9.0f);
-            growIvyBranch(spatial, chunk, pos, normal, branchDir, attractPoint, branchLen, climbBias * 0.7f, hanging, rng, 1);
+            growIvyBranch(spatial, chunk, pos, normal, branchDir, attractPoint, branchLen, climbBias * 0.7f, hanging, rng, 1, desc);
         }
     }
 
-    emitVineChain(chunk, nodes, rng);
+    emitVineChain(chunk, nodes, rng, desc);
 }
 
 } // namespace
 
-void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std::uint32_t materialId, float wallHeight, std::uint32_t seed)
+void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std::uint32_t materialId, const VineGenDesc &desc)
 {
+    if (!desc.enabled)
+    {
+        return;
+    }
+
+    const float wallHeight = desc.wallHeight;
     const SpatialAabbIndex spatial = buildSpatialAabbs(map, wallHeight);
     if (spatial.aabbs.empty())
     {
@@ -535,16 +598,20 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
         return chunks[static_cast<std::size_t>(cz * chunksX + cx)];
     };
 
-    std::mt19937 rng(seed);
+    std::mt19937 rng(desc.seed);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     std::uniform_real_distribution<float> angleDist(0.0f, 6.2831853f);
-    std::uniform_int_distribution<int> climbSteps(20, 34);
-    std::uniform_int_distribution<int> hangSteps(7, 13);
+    const int climbMin = std::max(2, desc.climbStepsMin);
+    const int climbMax = std::max(climbMin, desc.climbStepsMax);
+    const int hangMin = std::max(2, desc.hangStepsMin);
+    const int hangMax = std::max(hangMin, desc.hangStepsMax);
+    std::uniform_int_distribution<int> climbSteps(climbMin, climbMax);
+    std::uniform_int_distribution<int> hangSteps(hangMin, hangMax);
 
-    // 1. Floor-sprawling & pillar-climbing ivy clusters at selected corner pillars
+    // Floor-sprawling & pillar-climbing ivy clusters at selected corner pillars
     for (const glm::vec3 &pillar : map.pillars)
     {
-        if (unit(rng) > 0.36f)
+        if (unit(rng) > desc.pillarChance)
         {
             continue;
         }
@@ -577,11 +644,11 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
             normal = glm::vec3(0.0f, 1.0f, 0.0f);
 
             const glm::vec3 initDir = glm::normalize(-radial + glm::vec3(-radial.z, 0.0f, radial.x) * (unit(rng) - 0.5f));
-            growIvyBranch(spatial, chunk, seedPos, normal, initDir, attract, climbSteps(rng), 0.48f, false, rng, 0);
+            growIvyBranch(spatial, chunk, seedPos, normal, initDir, attract, climbSteps(rng), 0.48f, false, rng, 0, desc);
         }
     }
 
-    // 2. Courtyard wall-base climbing & upper-rim draping ivy
+    // Courtyard wall-base climbing & upper-rim draping ivy
     const float halfCell = map.cellSize * 0.5f;
     constexpr glm::ivec2 dirs[4] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     for (int y = 1; y < map.size.y - 1; ++y)
@@ -609,7 +676,8 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
                 const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
 
                 // Floor-to-wall climbing runners
-                if (unit(rng) < (isCourtyard ? 0.55f : 0.14f))
+                const float floorChance = isCourtyard ? desc.courtyardFloorChance : desc.corridorFloorChance;
+                if (unit(rng) < floorChance)
                 {
                     const float sideOff = (unit(rng) - 0.5f) * (map.cellSize * 0.60f);
                     const glm::vec3 wallBase = center + outward * halfCell + tangent * sideOff;
@@ -621,12 +689,12 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
                     for (int k = 0; k < stems; ++k)
                     {
                         const glm::vec3 dir = glm::normalize(outward + tangent * ((unit(rng) - 0.5f) * 1.1f));
-                        growIvyBranch(spatial, chunk, floorRoot, {0.0f, 1.0f, 0.0f}, dir, attract, climbSteps(rng), 0.42f, false, rng, 0);
+                        growIvyBranch(spatial, chunk, floorRoot, {0.0f, 1.0f, 0.0f}, dir, attract, climbSteps(rng), 0.42f, false, rng, 0, desc);
                     }
                 }
 
                 // Courtyard rim top-down hanging ivy curtains
-                if (isCourtyard && unit(rng) < 0.45f)
+                if (isCourtyard && unit(rng) < desc.courtyardRimChance)
                 {
                     const float sideOff = (unit(rng) - 0.5f) * (map.cellSize * 0.65f);
                     const glm::vec3 rimPos = center + outward * halfCell + inward * 0.04f + tangent * sideOff + glm::vec3(0.0f, wallHeight - 0.08f, 0.0f);
@@ -635,17 +703,17 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
                     for (int k = 0; k < tendrils; ++k)
                     {
                         const glm::vec3 dir = glm::normalize(glm::vec3(0.0f, -1.0f, 0.0f) + tangent * ((unit(rng) - 0.5f) * 0.7f));
-                        growIvyBranch(spatial, chunk, rimPos, inward, dir, rimPos - glm::vec3(0, 2, 0), hangSteps(rng), -0.35f, true, rng, 0);
+                        growIvyBranch(spatial, chunk, rimPos, inward, dir, rimPos - glm::vec3(0, 2, 0), hangSteps(rng), -0.35f, true, rng, 0, desc);
                     }
                 }
             }
         }
     }
 
-    // 3. Ceiling beam draping ivy clusters
+    // Ceiling beam draping ivy clusters
     for (const PropSpawn &beam : map.ceilingBeams)
     {
-        if (unit(rng) > 0.35f)
+        if (unit(rng) > desc.beamChance)
         {
             continue;
         }
@@ -659,7 +727,7 @@ void generateDungeonVines(const MazeMapData &map, render::MegaScene &scene, std:
         for (int k = 0; k < 2; ++k)
         {
             const glm::vec3 dir = glm::normalize(glm::vec3(0.0f, -1.0f, 0.0f) + along * ((unit(rng) - 0.5f) * 0.6f));
-            growIvyBranch(spatial, chunk, seedPos, side * sideSign, dir, seedPos - glm::vec3(0, 2, 0), hangSteps(rng), -0.3f, true, rng, 0);
+            growIvyBranch(spatial, chunk, seedPos, side * sideSign, dir, seedPos - glm::vec3(0, 2, 0), hangSteps(rng), -0.3f, true, rng, 0, desc);
         }
     }
 

@@ -391,7 +391,7 @@ std::uint32_t registerBeveledBoxMesh(MegaScene &scene, float halfExtent, float b
         addQuad(octPointZ(-1, -1, s), octPointZ(1, -1, s), octPointZ(1, 1, s), octPointZ(-1, 1, s));
     }
 
-    // 12 beveled edges
+    // beveled edges
     for (int s0 : {-1, 1})
     {
         for (int s1 : {-1, 1})

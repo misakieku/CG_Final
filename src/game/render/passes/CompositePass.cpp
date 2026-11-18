@@ -34,6 +34,7 @@ void CompositePass::execute(const RenderContext &ctx, RenderResources &res)
     glBindTextureUnit(0, res.gbuffer0().id());
     glBindTextureUnit(1, res.gbuffer1().id());
     glBindTextureUnit(2, res.depthTex().id());
+    glBindTextureUnit(3, res.shadowDepthTex().id());
 
     res.drawFullscreenTriangle();
 }

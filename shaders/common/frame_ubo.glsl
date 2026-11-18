@@ -13,6 +13,9 @@ layout(std140, binding = 0) uniform FrameUBO
     vec4 uTimeParams;   // x = elapsedTime, y = deltaTime, z = nearPlane, w = farPlane
     uvec4 uCounts;      // x = objectCount, y = meshCount, z = lightCount, w = frameIndex
     uvec4 uClusterDims; // x = NX, y = NY, z = NZ, w = maxLightsPerCluster
+    mat4 uLightViewProj;
+    vec4 uShadowFrustumPlanes[6];
+    vec4 uShadowParams; // x = invShadowSize, y = halfExtent, z = enabled, w = unused
 };
 
 vec3 reconstructWorldPos(vec2 screenUV, float reversedZDepth)

@@ -1,4 +1,6 @@
 #version 460 core
+layout(early_fragment_tests) in;
+
 in vec3 vWorldPos;
 in vec3 vWorldNormal;
 in vec2 vUV;
@@ -88,6 +90,9 @@ vec2 parallaxOcclusionMapping(vec2 uv, vec3 viewDirTS, float layer, vec2 duvdx, 
 void main()
 {
     vec3 geomN = normalize(vWorldNormal);
+
+    // Whitebox clay pass: texture/POM sampling temporarily commented out to judge silhouette & lighting
+    /*
     vec2 baseUV = ((vFlags & kObjectWorldUVFlag) != 0u) ? computeWorldBoxUV(vWorldPos, geomN) : vUV;
     vec2 duvdx = dFdx(baseUV);
     vec2 duvdy = dFdy(baseUV);
@@ -96,7 +101,8 @@ void main()
     mat3 TBN = computeCotangentTbn(geomN, vWorldPos, duvdx, duvdy, tbnValid);
 
     vec2 sampleUV = baseUV;
-    if (tbnValid && vMaterialId == 0u && (vFlags & kObjectWorldUVFlag) != 0u)
+    float pomScale = (vMaterialId == 0u) ? 0.022 : ((vMaterialId == 1u) ? 0.016 : 0.0);
+    if (tbnValid && pomScale > 0.0 && (vFlags & kObjectWorldUVFlag) != 0u)
     {
         float camDist = length(uCameraPos.xyz - vWorldPos);
         float distFade = 1.0 - smoothstep(8.0, 15.0, camDist);
@@ -106,7 +112,7 @@ void main()
             vec3 viewDirTS = transpose(TBN) * viewDirWS;
             if (viewDirTS.z > 0.01)
             {
-                sampleUV = parallaxOcclusionMapping(baseUV, viewDirTS, float(vMaterialId), duvdx, duvdy, 0.022 * distFade);
+                sampleUV = parallaxOcclusionMapping(baseUV, viewDirTS, float(vMaterialId), duvdx, duvdy, pomScale * distFade);
             }
         }
     }
@@ -119,4 +125,8 @@ void main()
 
     outGBuffer0 = vec4(albedoSample.rgb, ormSample.r);
     outGBuffer1 = vec4(worldN, ormSample.g);
+    */
+
+    outGBuffer0 = vec4(vec3(0.68), 1.0);
+    outGBuffer1 = vec4(geomN, 0.78);
 }

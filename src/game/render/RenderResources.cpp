@@ -1,6 +1,8 @@
 #include "game/render/RenderResources.hpp"
 #include "game/TextureGenerator.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,7 +16,7 @@ namespace game::render
 namespace
 {
 
-[[nodiscard]] std::array<glm::vec4, 6> extractReversedZFrustumPlanes(const glm::mat4 &vp) noexcept
+[[nodiscard]] std::array<glm::vec4, 6> extractZeroToOneFrustumPlanes(const glm::mat4 &vp) noexcept
 {
     auto row = [&](int r) -> glm::vec4
     {
@@ -60,6 +62,29 @@ RenderResources::RenderResources()
     {
         throw std::runtime_error("glCreateVertexArrays failed for fullscreen VAO");
     }
+
+    // Single high-res directional shadow map with hardware bilinear PCF comparison
+    m_shadowDepthTex.create2D(
+        gl::Texture2DDesc{
+            .width = kShadowMapSize,
+            .height = kShadowMapSize,
+            .internalFormat = GL_DEPTH_COMPONENT32F,
+            .format = GL_DEPTH_COMPONENT,
+            .type = GL_FLOAT,
+            .minFilter = GL_LINEAR,
+            .magFilter = GL_LINEAR,
+            .wrapS = GL_CLAMP_TO_BORDER,
+            .wrapT = GL_CLAMP_TO_BORDER,
+        },
+        nullptr);
+    m_shadowDepthTex.setBorderColor(glm::vec4(1.0f));
+    glTextureParameteri(m_shadowDepthTex.id(), GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTextureParameteri(m_shadowDepthTex.id(), GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+
+    m_shadowFbo = gl::Framebuffer::create();
+    m_shadowFbo.attachTexture2D(GL_DEPTH_ATTACHMENT, m_shadowDepthTex);
+    m_shadowFbo.setNoColorBuffer();
+    m_shadowFbo.ensureComplete();
 
     createStarterMaterialArrays();
 }
@@ -200,7 +225,7 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
     ubo.viewProj = vp;
     ubo.invViewProj = glm::inverse(vp);
     ubo.cameraPos = glm::vec4(ctx.cameraPos, ctx.nearPlane);
-    ubo.frustumPlanes = extractReversedZFrustumPlanes(vp);
+    ubo.frustumPlanes = extractZeroToOneFrustumPlanes(vp);
     ubo.screenParams = glm::vec4(
         static_cast<float>(ctx.viewportWidth),
         static_cast<float>(ctx.viewportHeight),
@@ -209,6 +234,22 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
     ubo.timeParams = glm::vec4(ctx.elapsedTime, ctx.deltaTime, ctx.nearPlane, ctx.farPlane);
     ubo.counts = glm::uvec4(m_scene.objectCount(), m_scene.meshCount(), m_lightCount, ctx.frameIndex);
     ubo.clusterDims = glm::uvec4(kClusterCountX, kClusterCountY, kClusterCountZ, kMaxLightsPerCluster);
+
+    // Texel-snapped directional moonlight orthographic matrix tracking the camera
+    const glm::vec3 lightDir = glm::normalize(glm::vec3(0.45f, 0.85f, 0.35f));
+    const glm::mat4 lightView = glm::lookAt(glm::vec3(0.0f), -lightDir, glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::vec3 camLS = glm::vec3(lightView * glm::vec4(ctx.cameraPos.x, 0.0f, ctx.cameraPos.z, 1.0f));
+    const float texelWorld = (2.0f * kShadowHalfExtent) / static_cast<float>(kShadowMapSize);
+    const float snappedX = std::floor(camLS.x / texelWorld) * texelWorld;
+    const float snappedY = std::floor(camLS.y / texelWorld) * texelWorld;
+    const glm::mat4 lightProj = glm::orthoRH_ZO(
+        snappedX - kShadowHalfExtent, snappedX + kShadowHalfExtent,
+        snappedY - kShadowHalfExtent, snappedY + kShadowHalfExtent,
+        -(camLS.z + 32.0f), -(camLS.z - 32.0f));
+
+    ubo.lightViewProj = lightProj * lightView;
+    ubo.shadowFrustumPlanes = extractZeroToOneFrustumPlanes(ubo.lightViewProj);
+    ubo.shadowParams = glm::vec4(1.0f / static_cast<float>(kShadowMapSize), kShadowHalfExtent, 1.0f, 0.0f);
 
     std::memcpy(m_frameUbo.mappedPtr(), &ubo, sizeof(FrameUniforms));
 }
@@ -224,7 +265,7 @@ void RenderResources::createStarterMaterialArrays()
 {
     constexpr int srcSize = 256;
     constexpr int dstSize = kMaterialArraySize;
-    constexpr int layers = kMaterialArrayLayers; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm, 7=foliage
+    constexpr int layers = kMaterialArrayLayers; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm, 7=foliage, 8=wood
 
     auto createArray = [&](GLuint &texId)
     {
@@ -393,6 +434,18 @@ void RenderResources::createStarterMaterialArrays()
         return glm::vec4(glm::mix(midribCol, frondCol, blend) + vein, 0.56f);
     });
 
+    // Layer 8: Weathered timber plank grain along local U axis
+    uploadLayer(8, [](int x, int y) -> glm::vec4
+    {
+        const float u = static_cast<float>(x) / 255.0f;
+        const float v = static_cast<float>(y) / 255.0f;
+        const float grain = 0.5f + 0.5f * std::sin(v * 58.0f + std::sin(u * 12.566f) * 2.8f);
+        const float fine = 0.02f * std::sin(u * 30.0f + v * 120.0f);
+        const glm::vec3 darkWood(0.14f, 0.09f, 0.055f);
+        const glm::vec3 agedOak(0.26f, 0.17f, 0.10f);
+        return glm::vec4(glm::mix(darkWood, agedOak, grain) + fine, 0.84f);
+    });
+
     glGenerateTextureMipmap(m_albedoArrayTex);
     glGenerateTextureMipmap(m_ormArrayTex);
     glGenerateTextureMipmap(m_normalArrayTex);
@@ -400,11 +453,15 @@ void RenderResources::createStarterMaterialArrays()
 
 void RenderResources::initBakedMaterials(const std::filesystem::path &shaderDir)
 {
-    const PBRTextures floorTex = generateFloor(shaderDir, kMaterialArraySize);
+    auto uploadBakedLayer = [&](GLint layer, const PBRTextures &tex)
+    {
+        glCopyImageSubData(tex.albedo.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_albedoArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, kMaterialArraySize, kMaterialArraySize, 1);
+        glCopyImageSubData(tex.orm.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_ormArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, kMaterialArraySize, kMaterialArraySize, 1);
+        glCopyImageSubData(tex.normal.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_normalArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, kMaterialArraySize, kMaterialArraySize, 1);
+    };
 
-    glCopyImageSubData(floorTex.albedo.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_albedoArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
-    glCopyImageSubData(floorTex.orm.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_ormArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
-    glCopyImageSubData(floorTex.normal.id(), GL_TEXTURE_2D, 0, 0, 0, 0, m_normalArrayTex, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, kMaterialArraySize, kMaterialArraySize, 1);
+    uploadBakedLayer(0, generateFloor(shaderDir, kMaterialArraySize));
+    uploadBakedLayer(1, generateWall(shaderDir, kMaterialArraySize));
 
     glGenerateTextureMipmap(m_albedoArrayTex);
     glGenerateTextureMipmap(m_ormArrayTex);

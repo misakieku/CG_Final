@@ -16,5 +16,6 @@ struct PBRTextures
 };
 
 [[nodiscard]] PBRTextures generateFloor(const std::filesystem::path &shaderDir, int resolution = 1024);
+[[nodiscard]] PBRTextures generateWall(const std::filesystem::path &shaderDir, int resolution = 1024);
 
 } // namespace game

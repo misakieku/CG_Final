@@ -2,9 +2,11 @@
 
 #include "game/render/passes/CompositePass.hpp"
 #include "game/render/passes/CullingPass.hpp"
+#include "game/render/passes/DepthPrePass.hpp"
 #include "game/render/passes/GBufferPass.hpp"
 #include "game/render/passes/LightCullingPass.hpp"
 #include "game/render/passes/PostProcessPass.hpp"
+#include "game/render/passes/ShadowPass.hpp"
 #include "game/render/passes/WaterPass.hpp"
 
 #include <glad/gl.h>
@@ -24,7 +26,10 @@ Renderer::Renderer(int initialWidth, int initialHeight, std::filesystem::path sh
     m_resources.onResize(initialWidth, initialHeight);
     m_resources.initBakedMaterials(m_shaderDir);
 
-    addPass<CullingPass>(m_shaderDir);
+    addPass<CullingPass>(m_shaderDir, true);
+    addPass<ShadowPass>(m_shaderDir);
+    addPass<CullingPass>(m_shaderDir, false);
+    addPass<DepthPrePass>(m_shaderDir);
     addPass<GBufferPass>(m_shaderDir);
     addPass<LightCullingPass>(m_shaderDir);
     addPass<CompositePass>(m_shaderDir);

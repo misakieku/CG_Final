@@ -10,12 +10,13 @@ namespace game::render
 class CullingPass final : public IRenderPass
 {
 public:
-    explicit CullingPass(const std::filesystem::path &shaderDir);
+    explicit CullingPass(const std::filesystem::path &shaderDir, bool cullShadow = false);
     void reloadShaders(const std::filesystem::path &shaderDir) override;
     void execute(const RenderContext &ctx, RenderResources &res) override;
 
 private:
     gl::Shader m_cullShader;
+    bool m_cullShadow = false;
 };
 
 } // namespace game::render
