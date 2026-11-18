@@ -145,6 +145,7 @@ add_executable(MazeGame
     src/game/render/passes/CullingPass.cpp
     src/game/render/passes/DepthPrePass.cpp
     src/game/render/passes/GBufferPass.cpp
+    src/game/render/passes/GIPass.cpp
     src/game/render/passes/LightCullingPass.cpp
     src/game/render/passes/CompositePass.cpp
     src/game/render/passes/ShadowPass.cpp

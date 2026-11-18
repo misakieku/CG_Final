@@ -53,7 +53,7 @@ struct MazeSceneDesc
 
     // Wall torches
     float torchScale = 1.0f;
-    PointLightDesc torchLight{.color = {1.0f, 0.52f, 0.18f}, .radius = 9.2f, .intensity = 5.5f};
+    PointLightDesc torchLight{.color = {1.0f, 0.52f, 0.18f}, .radius = 9.2f, .intensity = 2.5f};
 
     // Clustered floor candles
     int candleClusterMinCount = 2;

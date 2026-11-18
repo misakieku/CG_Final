@@ -1,0 +1,53 @@
+#version 460 core
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/lighting_common.glsl"
+#include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
+
+layout(rgba16f, binding = 0) uniform image3D uOutSh0;
+layout(rgba16f, binding = 1) uniform image3D uOutSh1;
+layout(rgba16f, binding = 2) uniform image3D uOutSh2;
+
+layout(std430, binding = 7) buffer GiProbeMetaBuffer
+{
+    uint ProbeMeta[];
+};
+
+layout(std430, binding = 9) readonly buffer GiActiveListBuffer
+{
+    uint ActiveProbeIds[];
+};
+
+layout(std430, binding = 11) readonly buffer GiStagingShBuffer
+{
+    vec4 StagingSh[];
+};
+
+void main()
+{
+    uint slot = gl_GlobalInvocationID.x;
+    uint probeId = ActiveProbeIds[slot];
+    ivec3 pc = giCoordFromIndex(probeId);
+
+    vec4 n0 = StagingSh[slot * 3u + 0u];
+    vec4 n1 = StagingSh[slot * 3u + 1u];
+    vec4 n2 = StagingSh[slot * 3u + 2u];
+
+    // OctCache already maintains temporal smoothing per cell; blend SH output cleanly without heavy lag
+    bool firstTime = (ProbeMeta[probeId] == 1u);
+    float alpha = firstTime ? 1.0 : 0.35;
+
+    if (!firstTime)
+    {
+        n0 = mix(imageLoad(uOutSh0, pc), n0, alpha);
+        n1 = mix(imageLoad(uOutSh1, pc), n1, alpha);
+        n2 = mix(imageLoad(uOutSh2, pc), n2, alpha);
+    }
+
+    imageStore(uOutSh0, pc, n0);
+    imageStore(uOutSh1, pc, n1);
+    imageStore(uOutSh2, pc, n2);
+    ProbeMeta[probeId] = 2u;
+}

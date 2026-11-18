@@ -4,6 +4,7 @@
 #include "game/render/passes/CullingPass.hpp"
 #include "game/render/passes/DepthPrePass.hpp"
 #include "game/render/passes/GBufferPass.hpp"
+#include "game/render/passes/GIPass.hpp"
 #include "game/render/passes/LightCullingPass.hpp"
 #include "game/render/passes/PostProcessPass.hpp"
 #include "game/render/passes/ShadowPass.hpp"
@@ -32,6 +33,7 @@ Renderer::Renderer(int initialWidth, int initialHeight, std::filesystem::path sh
     addPass<DepthPrePass>(m_shaderDir);
     addPass<GBufferPass>(m_shaderDir);
     addPass<LightCullingPass>(m_shaderDir);
+    addPass<GIPass>(m_shaderDir);
     addPass<CompositePass>(m_shaderDir);
     addPass<WaterPass>(m_shaderDir);
     addPass<PostProcessPass>(m_shaderDir);

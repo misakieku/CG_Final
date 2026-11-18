@@ -1,0 +1,649 @@
+#version 460 core
+#define RAY_COUNT 16
+
+layout(local_size_x = RAY_COUNT, local_size_y = 1, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/lighting_common.glsl"
+#include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
+
+layout(binding = 0) uniform sampler3D uGiSh0;
+layout(binding = 1) uniform sampler3D uGiSh1;
+layout(binding = 2) uniform sampler3D uGiSh2;
+layout(binding = 3) uniform usampler2D uMazeGrid;
+layout(binding = 4) uniform sampler2DShadow uShadowMap;
+layout(binding = 5) uniform sampler2DArray uAlbedoArray;
+
+layout(std430, binding = 4) readonly buffer LightsBuffer
+{
+    GpuPointLight Lights[];
+};
+
+layout(std430, binding = 7) readonly buffer GiProbeMetaBuffer
+{
+    uint ProbeMeta[];
+};
+
+layout(std430, binding = 9) readonly buffer GiActiveListBuffer
+{
+    uint ActiveProbeIds[];
+};
+
+layout(std430, binding = 11) writeonly buffer GiStagingShBuffer
+{
+    vec4 StagingSh[]; // 3 vec4s per active probe slot (gl_WorkGroupID.x)
+};
+
+layout(std430, binding = 12) buffer GiOctCacheBuffer
+{
+    uvec2 OctCache[]; // 64 texels per probe: fp16(r,g), fp16(b, age)
+};
+
+shared uint sLightIndices[32];
+shared uint sLightCount;
+shared vec3 sCellRad[64];
+shared float sCellAge[64];
+shared float sCellWeight[64];
+shared uint sRayCell[RAY_COUNT];
+shared uint sRaySubIdx[RAY_COUNT];
+shared uint sRaySubCount[RAY_COUNT];
+shared uint sCellFirstRay[64];
+shared uint sCellNumRays[64];
+shared vec3 sTraceRad[RAY_COUNT];
+shared vec4 sAccum0[RAY_COUNT];
+shared vec4 sAccum1[RAY_COUNT];
+shared vec4 sAccum2[RAY_COUNT];
+
+vec3 octDecodeRaw(vec2 f)
+{
+    vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    float t = max(-n.z, 0.0);
+    n.x += (n.x >= 0.0) ? -t : t;
+    n.y += (n.y >= 0.0) ? -t : t;
+    return n;
+}
+
+vec3 sampleOctCellRay(uint tid, uint probeId, bool firstTime)
+{
+    uint cell = sRayCell[tid];
+    uint subIdx = sRaySubIdx[tid];
+    uint subCount = max(sRaySubCount[tid], 1u);
+
+    uvec2 cellXY = uvec2(cell & 7u, cell >> 3u);
+    float cellHash = fract(sin(float(probeId * 64u + cell) * 12.9898) * 43758.5453);
+
+    vec2 subUV;
+    if (firstTime && RAY_COUNT <= 16)
+    {
+        subUV = vec2(0.5) + vec2(cellHash, fract(cellHash * 1.61803398875)) * 0.8;
+    }
+    else if (subCount > 1u)
+    {
+        float u = (float(subIdx) + 0.5) / float(subCount);
+        float v = fract(float(subIdx) * 0.61803398875 + cellHash + float(uCounts.w & 15u) * 0.61803398875);
+        subUV = vec2(u, v);
+    }
+    else
+    {
+        float t = float((uCounts.w + cell * 5u + probeId * 3u) & 15u);
+        subUV = fract(vec2(cellHash, fract(cellHash * 1.61803398875)) + t * vec2(0.754877666, 0.569840291));
+    }
+
+    vec2 octUV = (vec2(cellXY) + subUV) * 0.25 - 1.0;
+    return normalize(octDecodeRaw(octUV));
+}
+
+float evalShadowAtHit(vec3 pos, vec3 N, float NdotL)
+{
+    if (uShadowParams.z < 0.5 || NdotL <= 0.0)
+    {
+        return 0.0;
+    }
+    vec3 biasedPos = pos + N * 0.05;
+    vec4 sc = uLightViewProj * vec4(biasedPos, 1.0);
+    sc.xyz /= sc.w;
+    vec2 uv = sc.xy * 0.5 + 0.5;
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || sc.z <= 0.0 || sc.z >= 1.0)
+    {
+        return 0.0;
+    }
+    return texture(uShadowMap, vec3(uv, sc.z));
+}
+
+bool traceMazeGridRay(vec3 orig, vec3 dir, float maxDist, out vec3 hitPos, out vec3 hitN, out uint hitLayer, out bool hitSky)
+{
+    float cellSize = uGiGridInvStep.w;
+    float wallH = uGiMisc.x;
+    float roofTop = wallH + 0.30;
+    int gridW = int(uGiMisc.y);
+    int gridH = int(uGiMisc.z);
+
+    hitSky = false;
+    hitLayer = 1u;
+    hitPos = orig;
+    hitN = -dir;
+
+    int cx = int(floor(orig.x / cellSize));
+    int cz = int(floor(orig.z / cellSize));
+
+    float invDx = (abs(dir.x) > 1e-6) ? (1.0 / dir.x) : 1e20;
+    float invDz = (abs(dir.z) > 1e-6) ? (1.0 / dir.z) : 1e20;
+    int stepX = (dir.x >= 0.0) ? 1 : -1;
+    int stepZ = (dir.z >= 0.0) ? 1 : -1;
+
+    float nextX = float(cx + (dir.x >= 0.0 ? 1 : 0)) * cellSize;
+    float nextZ = float(cz + (dir.z >= 0.0 ? 1 : 0)) * cellSize;
+    float tMaxX = (abs(dir.x) > 1e-6) ? ((nextX - orig.x) * invDx) : 1e20;
+    float tMaxZ = (abs(dir.z) > 1e-6) ? ((nextZ - orig.z) * invDz) : 1e20;
+    float tDeltaX = abs(cellSize * invDx);
+    float tDeltaZ = abs(cellSize * invDz);
+
+    float tFloor = (dir.y < -1e-6) ? (-orig.y / dir.y) : 1e20;
+    float tRoofBot = (dir.y > 1e-6 && orig.y < wallH) ? ((wallH - orig.y) / dir.y) : 1e20;
+    float tRoofTop = (dir.y < -1e-6 && orig.y > roofTop) ? ((roofTop - orig.y) / dir.y) : 1e20;
+
+    float tCurr = 0.0;
+    vec3 enterN = vec3(0.0);
+
+    for (int iter = 0; iter < 16; ++iter)
+    {
+        if (cx < 0 || cx >= gridW || cz < 0 || cz >= gridH)
+        {
+            if (orig.y + dir.y * tCurr > roofTop)
+            {
+                hitSky = true;
+                return true;
+            }
+            hitPos = orig + dir * tCurr;
+            hitN = enterN;
+            hitLayer = 1u;
+            return true;
+        }
+
+        uint cellKind = texelFetch(uMazeGrid, ivec2(cx, cz), 0).r;
+        float yEnter = orig.y + dir.y * tCurr;
+        if (tCurr > 1e-4)
+        {
+            if (cellKind == kGiCellWall && yEnter <= wallH + 0.01)
+            {
+                hitPos = orig + dir * tCurr;
+                hitN = enterN;
+                hitLayer = 1u;
+                return true;
+            }
+            if (cellKind != kGiCellCourtyard && yEnter >= wallH && yEnter <= roofTop)
+            {
+                hitPos = orig + dir * tCurr;
+                hitN = enterN;
+                hitLayer = 1u;
+                return true;
+            }
+        }
+
+        float tNextCell = min(min(tMaxX, tMaxZ), maxDist);
+        if (tFloor >= max(0.0, tCurr) && tFloor <= tNextCell)
+        {
+            hitPos = orig + dir * tFloor;
+            hitN = vec3(0.0, 1.0, 0.0);
+            hitLayer = 0u;
+            return true;
+        }
+        if (cellKind != kGiCellCourtyard && tRoofBot >= max(0.0, tCurr) && tRoofBot <= tNextCell)
+        {
+            hitPos = orig + dir * tRoofBot;
+            hitN = vec3(0.0, -1.0, 0.0);
+            hitLayer = 1u;
+            return true;
+        }
+        if (cellKind != kGiCellCourtyard && tRoofTop >= max(0.0, tCurr) && tRoofTop <= tNextCell)
+        {
+            hitPos = orig + dir * tRoofTop;
+            hitN = vec3(0.0, 1.0, 0.0);
+            hitLayer = 1u;
+            return true;
+        }
+
+        float yExit = orig.y + dir.y * tNextCell;
+        if (yExit > roofTop + 0.05 && dir.y > 0.0)
+        {
+            hitSky = true;
+            return true;
+        }
+        if (tNextCell >= maxDist)
+        {
+            return false;
+        }
+
+        if (tMaxX < tMaxZ)
+        {
+            tCurr = tMaxX;
+            tMaxX += tDeltaX;
+            cx += stepX;
+            enterN = vec3(-float(stepX), 0.0, 0.0);
+        }
+        else
+        {
+            tCurr = tMaxZ;
+            tMaxZ += tDeltaZ;
+            cz += stepZ;
+            enterN = vec3(0.0, 0.0, -float(stepZ));
+        }
+    }
+    return false;
+}
+
+vec3 sampleSurfaceAlbedo(vec3 pos, vec3 N, uint layer)
+{
+    if (uGiMisc.w > 0.0)
+    {
+        return vec3(uGiMisc.w);
+    }
+    vec3 an = abs(N);
+    vec2 uv = (an.x >= an.y && an.x >= an.z) ? pos.zy : ((an.y >= an.x && an.y >= an.z) ? pos.xz : pos.xy);
+    return textureLod(uAlbedoArray, vec3(uv * 0.333333, float(layer)), 7.0).rgb;
+}
+
+void main()
+{
+    uint slot = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint probeId = ActiveProbeIds[slot];
+    ivec3 probeCoord = giCoordFromIndex(probeId);
+    vec3 probePos = giProbeToWorld(probeCoord);
+    bool firstTime = (ProbeMeta[probeId] == 1u);
+    uint octBase = probeId * 64u;
+
+    for (uint c = tid; c < 64u; c += uint(RAY_COUNT))
+    {
+        if (firstTime)
+        {
+            sCellRad[c] = vec3(0.0);
+            sCellAge[c] = 64.0;
+        }
+        else
+        {
+            uvec2 packedVal = OctCache[octBase + c];
+            vec2 rg = unpackHalf2x16(packedVal.x);
+            vec2 ba = unpackHalf2x16(packedVal.y);
+            sCellRad[c] = vec3(rg, ba.x);
+            sCellAge[c] = ba.y;
+        }
+
+        uvec2 cellXY = uvec2(c & 7u, c >> 3u);
+        vec2 centerUV = (vec2(cellXY) + 0.5) * 0.25 - 1.0;
+        float r = length(octDecodeRaw(centerUV));
+        sCellWeight[c] = 1.0 / (r * r * r);
+    }
+
+    if (tid == 0u)
+    {
+        sLightCount = 0u;
+    }
+    barrier();
+
+    if (tid == 0u)
+    {
+        float sumW = 0.0;
+        for (uint c = 0u; c < 64u; ++c)
+        {
+            sumW += sCellWeight[c];
+        }
+        float normW = 64.0 / max(sumW, 1e-6);
+        for (uint c = 0u; c < 64u; ++c)
+        {
+            sCellWeight[c] *= normW;
+        }
+
+        uint alloc[64];
+        for (uint c = 0u; c < 64u; ++c)
+        {
+            alloc[c] = 0u;
+        }
+
+        if (firstTime)
+        {
+            if (RAY_COUNT >= 64)
+            {
+                for (uint c = 0u; c < 64u; ++c)
+                {
+                    alloc[c] = 1u;
+                }
+                uint rem = uint(RAY_COUNT) - 64u;
+                for (uint k = 0u; k < rem; ++k)
+                {
+                    alloc[k & 63u] += 1u;
+                }
+            }
+            else if (RAY_COUNT >= 32)
+            {
+                // Checkerboard subset so every untraced cell touches traced 4-neighbors
+                for (uint iy = 0u; iy < 8u; ++iy)
+                {
+                    for (uint ix = 0u; ix < 8u; ++ix)
+                    {
+                        if (((ix + iy) & 1u) == 0u)
+                        {
+                            alloc[iy * 8u + ix] = 1u;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // 4x4 super-blocks: cover every 2x2 quad uniformly so zero cells start black
+                for (uint k = 0u; k < uint(RAY_COUNT); ++k)
+                {
+                    uint bx = k & 3u;
+                    uint by = (k >> 2u) & 3u;
+                    alloc[(by * 2u) * 8u + (bx * 2u)] += 1u;
+                }
+            }
+        }
+        else
+        {
+            vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
+            float scores[64];
+            float sumScore = 0.0;
+            float maxScore = 0.0;
+            for (uint c = 0u; c < 64u; ++c)
+            {
+                float lum = dot(sCellRad[c], lumaW);
+                float sc = lum * sCellWeight[c];
+                scores[c] = sc;
+                sumScore += sc;
+                maxScore = max(maxScore, sc);
+            }
+            float meanScore = sumScore / 64.0;
+            uint usedRays = 0u;
+
+            // Reserve up to three-eighths of rays for stale cold cells so low ray counts keep full coverage
+            uint refreshBudget = max(4u, (uint(RAY_COUNT) * 3u) >> 3u);
+            uint phase = (uCounts.w + probeId * 7u) & 63u;
+            for (uint step = 0u; step < 64u && usedRays < refreshBudget; ++step)
+            {
+                uint c = (phase + step * 17u) & 63u;
+                if (sCellAge[c] >= 4.0)
+                {
+                    alloc[c] = 1u;
+                    usedRays += 1u;
+                }
+            }
+
+            // Reallocate remaining rays using Lighting PDF only (world probes have isotropic BRDF prior)
+            uint remRays = uint(RAY_COUNT) - usedRays;
+            float cullThresh = (maxScore > 1e-4) ? (0.18 * meanScore) : -1.0;
+
+            float targetWeight[64];
+            float sumTarget = 0.0;
+            for (uint c = 0u; c < 64u; ++c)
+            {
+                float baseW = (scores[c] >= cullThresh) ? max(scores[c], 0.05 * meanScore + 1e-5) : 0.0;
+                if (alloc[c] > 0u && baseW <= meanScore)
+                {
+                    baseW = 0.0;
+                }
+                targetWeight[c] = baseW;
+                sumTarget += baseW;
+            }
+
+            if (sumTarget <= 1e-6)
+            {
+                for (uint c = 0u; c < 64u; ++c)
+                {
+                    targetWeight[c] = (alloc[c] == 0u) ? sCellWeight[c] : 0.0;
+                    sumTarget += targetWeight[c];
+                }
+            }
+
+            const uint maxRaysPerCell = (RAY_COUNT <= 16) ? 2u : 4u;
+            float remFrac[64];
+            uint assigned = 0u;
+            for (uint c = 0u; c < 64u; ++c)
+            {
+                float quota = (sumTarget > 1e-6) ? (float(remRays) * (targetWeight[c] / sumTarget)) : 0.0;
+                uint cap = maxRaysPerCell - min(alloc[c], maxRaysPerCell);
+                uint whole = min(min(uint(floor(quota)), cap), remRays - assigned);
+                alloc[c] += whole;
+                assigned += whole;
+                remFrac[c] = (alloc[c] < maxRaysPerCell) ? (quota - float(whole)) : -1.0;
+            }
+
+            while (assigned < remRays)
+            {
+                int bestC = -1;
+                float bestVal = -2.0;
+                for (uint c = 0u; c < 64u; ++c)
+                {
+                    if (alloc[c] < maxRaysPerCell)
+                    {
+                        float tie = remFrac[c]
+                            + (scores[c] / (maxScore + 1e-5)) * 1e-2
+                            + min(sCellAge[c], 16.0) * 1e-3;
+                        if (tie > bestVal)
+                        {
+                            bestVal = tie;
+                            bestC = int(c);
+                        }
+                    }
+                }
+                if (bestC < 0)
+                {
+                    break;
+                }
+                alloc[uint(bestC)] += 1u;
+                remFrac[uint(bestC)] = -1.0;
+                assigned += 1u;
+            }
+        }
+
+        uint cursor = 0u;
+        for (uint c = 0u; c < 64u; ++c)
+        {
+            uint count = alloc[c];
+            sCellFirstRay[c] = cursor;
+            sCellNumRays[c] = count;
+            for (uint sub = 0u; sub < count; ++sub)
+            {
+                if (cursor < uint(RAY_COUNT))
+                {
+                    sRayCell[cursor] = c;
+                    sRaySubIdx[cursor] = sub;
+                    sRaySubCount[cursor] = count;
+                    cursor += 1u;
+                }
+            }
+        }
+    }
+
+    // Cooperatively gather local point lights influencing rays around this probe
+    uint totalLights = uCounts.z;
+    for (uint i = tid; i < totalLights; i += uint(RAY_COUNT))
+    {
+        GpuPointLight l = Lights[i];
+        float maxRange = l.positionRadius.w + 15.0;
+        vec3 d = l.positionRadius.xyz - probePos;
+        if (dot(d, d) <= maxRange * maxRange && l.colorIntensity.w > 1e-4)
+        {
+            uint localIdx = atomicAdd(sLightCount, 1u);
+            if (localIdx < 32u)
+            {
+                sLightIndices[localIdx] = i;
+            }
+        }
+    }
+    barrier();
+
+    uint localLightCount = min(sLightCount, 32u);
+    vec3 rayDir = sampleOctCellRay(tid, probeId, firstTime);
+
+    vec3 hitPos, hitN;
+    uint hitLayer;
+    bool hitSky;
+    vec3 radiance = vec3(0.0);
+
+    if (traceMazeGridRay(probePos, rayDir, 18.0, hitPos, hitN, hitLayer, hitSky))
+    {
+        if (hitSky)
+        {
+            radiance = evalNightSky(rayDir);
+        }
+        else
+        {
+            vec3 hitAlbedo = sampleSurfaceAlbedo(hitPos, hitN, hitLayer);
+            vec3 direct = vec3(0.0);
+
+            float moonNdotL = max(dot(hitN, kMoonDir), 0.0);
+            if (moonNdotL > 0.0)
+            {
+                float shadow = evalShadowAtHit(hitPos, hitN, moonNdotL);
+                direct += kMoonColor * (0.78 * moonNdotL * shadow);
+            }
+
+            for (uint k = 0u; k < localLightCount; ++k)
+            {
+                GpuPointLight light = Lights[sLightIndices[k]];
+                vec3 toLight = light.positionRadius.xyz - hitPos;
+                float d2 = dot(toLight, toLight);
+                float r = light.positionRadius.w;
+                if (d2 >= r * r || d2 <= 1e-5)
+                {
+                    continue;
+                }
+                float d = sqrt(d2);
+                float NdotL = max(dot(hitN, toLight / d), 0.0);
+                if (NdotL <= 0.0)
+                {
+                    continue;
+                }
+                float wallVis = evalPointLightWallVisibility(hitPos + hitN * 0.06, light.positionRadius.xyz, uMazeGrid);
+                if (wallVis <= 1e-4)
+                {
+                    continue;
+                }
+                float atten = computePointLightAttenuation(d2, r);
+                direct += light.colorIntensity.rgb * (light.colorIntensity.w * atten * NdotL * wallVis);
+            }
+
+            // Temporal multi-bounce: sample previous frame's persistent 3D SH field
+            vec3 prevBounce = sampleProbeGiFiltered(hitPos, hitN, uGiSh0, uGiSh1, uGiSh2, uMazeGrid);
+            radiance = (direct + prevBounce * 0.72) * hitAlbedo;
+        }
+    }
+
+    // Clamp extreme near-torch indirect fireflies cleanly within each octahedral cell
+    float radLum = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
+    if (radLum > 4.5)
+    {
+        radiance *= 4.5 / radLum;
+    }
+
+    sTraceRad[tid] = radiance;
+    barrier();
+
+    for (uint c = tid; c < 64u; c += uint(RAY_COUNT))
+    {
+        uint nRays = sCellNumRays[c];
+        if (nRays > 0u)
+        {
+            uint base = sCellFirstRay[c];
+            vec3 avgRad = vec3(0.0);
+            for (uint k = 0u; k < nRays; ++k)
+            {
+                avgRad += sTraceRad[base + k];
+            }
+            avgRad /= float(nRays);
+            float ageBoost = min(sCellAge[c], 8.0) * 0.025;
+            float multiBoost = 0.045 * float(min(nRays, 4u) - 1u);
+            float alpha = firstTime ? 1.0 : min(0.35, 0.10 + ageBoost + multiBoost);
+            sCellRad[c] = firstTime ? avgRad : mix(sCellRad[c], avgRad, alpha);
+            sCellAge[c] = 0.0;
+        }
+        else
+        {
+            sCellAge[c] = min(sCellAge[c] + 1.0, 255.0);
+        }
+    }
+    barrier();
+
+    if (firstTime && RAY_COUNT < 64)
+    {
+        for (uint c = tid; c < 64u; c += uint(RAY_COUNT))
+        {
+            if (sCellNumRays[c] == 0u)
+            {
+                int ix = int(c & 7u);
+                int iy = int(c >> 3u);
+                if (RAY_COUNT <= 16)
+                {
+                    uint rep = uint((iy & ~1) * 8 + (ix & ~1));
+                    sCellRad[c] = sCellRad[rep];
+                    sCellAge[c] = 2.0;
+                }
+                else
+                {
+                    vec3 sumN = vec3(0.0);
+                    float cntN = 0.0;
+                    const ivec2 offs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+                    for (int k = 0; k < 4; ++k)
+                    {
+                        int nx = clamp(ix + offs[k].x, 0, 7);
+                        int ny = clamp(iy + offs[k].y, 0, 7);
+                        uint nc = uint(ny * 8 + nx);
+                        if (sCellNumRays[nc] > 0u)
+                        {
+                            sumN += sCellRad[nc];
+                            cntN += 1.0;
+                        }
+                    }
+                    sCellRad[c] = (cntN > 0.0) ? (sumN / cntN) : vec3(0.0);
+                    sCellAge[c] = 1.0;
+                }
+            }
+        }
+        barrier();
+    }
+
+    // Persist world-fixed 8x8 octahedral cache and integrate all 64 cells analytically to L1 SH
+    vec4 sh0 = vec4(0.0);
+    vec4 sh1 = vec4(0.0);
+    vec4 sh2 = vec4(0.0);
+
+    for (uint c = tid; c < 64u; c += uint(RAY_COUNT))
+    {
+        vec3 rad = sCellRad[c];
+        OctCache[octBase + c] = uvec2(packHalf2x16(rad.rg), packHalf2x16(vec2(rad.b, sCellAge[c])));
+
+        uvec2 cellXY = uvec2(c & 7u, c >> 3u);
+        vec2 centerUV = (vec2(cellXY) + 0.5) * 0.25 - 1.0;
+        vec3 cDir = normalize(octDecodeRaw(centerUV));
+        float w = sCellWeight[c] * (1.0 / 64.0);
+
+        sh0 += vec4(rad.r * w, rad.r * cDir * (3.0 * w));
+        sh1 += vec4(rad.g * w, rad.g * cDir * (3.0 * w));
+        sh2 += vec4(rad.b * w, rad.b * cDir * (3.0 * w));
+    }
+
+    sAccum0[tid] = sh0;
+    sAccum1[tid] = sh1;
+    sAccum2[tid] = sh2;
+    barrier();
+
+    for (uint stride = uint(RAY_COUNT) >> 1u; stride > 0u; stride >>= 1u)
+    {
+        if (tid < stride)
+        {
+            sAccum0[tid] += sAccum0[tid + stride];
+            sAccum1[tid] += sAccum1[tid + stride];
+            sAccum2[tid] += sAccum2[tid + stride];
+        }
+        barrier();
+    }
+
+    if (tid == 0u)
+    {
+        StagingSh[slot * 3u + 0u] = sAccum0[0];
+        StagingSh[slot * 3u + 1u] = sAccum1[0];
+        StagingSh[slot * 3u + 2u] = sAccum2[0];
+    }
+}

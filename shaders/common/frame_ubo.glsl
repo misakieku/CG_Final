@@ -15,7 +15,11 @@ layout(std140, binding = 0) uniform FrameUBO
     uvec4 uClusterDims; // x = NX, y = NY, z = NZ, w = maxLightsPerCluster
     mat4 uLightViewProj;
     vec4 uShadowFrustumPlanes[6];
-    vec4 uShadowParams; // x = invShadowSize, y = halfExtent, z = enabled, w = unused
+    vec4 uShadowParams;  // x = invShadowSize, y = halfExtent, z = enabled, w = unused
+    vec4 uGiGridOrigin;  // xyz = probe(0,0,0) world pos, w = probeStepXZ
+    vec4 uGiGridInvStep; // xyz = 1/probeStep, w = cellSize
+    uvec4 uGiDims;       // x = nx, y = ny, z = nz, w = totalProbes
+    vec4 uGiMisc;        // x = wallHeight, y = gridW, z = gridH, w = whiteboxAlbedo
 };
 
 vec3 reconstructWorldPos(vec2 screenUV, float reversedZDepth)

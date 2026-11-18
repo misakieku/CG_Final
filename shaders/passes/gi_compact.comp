@@ -1,0 +1,40 @@
+#version 460 core
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+
+layout(std430, binding = 7) readonly buffer GiProbeMetaBuffer
+{
+    uint ProbeMeta[];
+};
+
+layout(std430, binding = 8) readonly buffer GiActiveFlagBuffer
+{
+    uint ActiveFlags[];
+};
+
+layout(std430, binding = 9) writeonly buffer GiActiveListBuffer
+{
+    uint ActiveProbeIds[];
+};
+
+layout(std430, binding = 10) buffer GiDispatchCmdBuffer
+{
+    uint NumGroupsX;
+    uint NumGroupsY;
+    uint NumGroupsZ;
+};
+
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uGiDims.w)
+    {
+        return;
+    }
+    if (ActiveFlags[id] != 0u && ProbeMeta[id] != 0u)
+    {
+        uint slot = atomicAdd(NumGroupsX, 1u);
+        ActiveProbeIds[slot] = id;
+    }
+}

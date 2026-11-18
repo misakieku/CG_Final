@@ -60,6 +60,10 @@ struct alignas(16) FrameUniforms
     glm::mat4 lightViewProj{1.0f};
     std::array<glm::vec4, 6> shadowFrustumPlanes{};
     glm::vec4 shadowParams{0.0f}; // x=invShadowSize, y=halfExtent, z=enabled, w=unused
+    glm::vec4 giGridOrigin{0.0f}; // xyz=probe(0,0,0) world pos, w=probeStepXZ
+    glm::vec4 giGridInvStep{0.0f}; // xyz=1/probeStep, w=cellSize
+    glm::uvec4 giDims{0u};        // x=nx, y=ny, z=nz, w=totalProbes
+    glm::vec4 giMisc{0.0f};       // x=wallHeight, y=gridW, z=gridH, w=whiteboxAlbedo (<=0 uses albedoArray)
 };
 
 /// Shared GPU render targets, FBO bundles, scene buffers, clustered light buffers, and material array owned by Renderer.
@@ -74,6 +78,7 @@ public:
 
     void onResize(int width, int height);
     void initBakedMaterials(const std::filesystem::path &shaderDir);
+    void initGiGrid(glm::ivec2 gridSize, float cellSize, float wallHeight, std::span<const std::uint8_t> cellKinds);
     void setPointLights(std::span<const GpuPointLight> lights);
     void updatePointLight(std::uint32_t index, const GpuPointLight &light);
     void updateFrameUniforms(const RenderContext &ctx);
@@ -101,6 +106,17 @@ public:
     [[nodiscard]] const gl::Framebuffer &puddleFbo() const noexcept { return m_puddleFbo; }
     [[nodiscard]] const gl::Framebuffer &hdrFbo() const noexcept { return m_hdrFbo; }
     [[nodiscard]] const gl::Framebuffer &shadowFbo() const noexcept { return m_shadowFbo; }
+
+    [[nodiscard]] GLuint mazeGridTexId() const noexcept { return m_mazeGridTex; }
+    [[nodiscard]] GLuint giShTexId(int idx) const noexcept { return m_giShTex[static_cast<std::size_t>(idx)]; }
+    [[nodiscard]] const GpuBuffer &giProbeMetaSSBO() const noexcept { return m_giProbeMetaSSBO; }
+    [[nodiscard]] const GpuBuffer &giActiveFlagSSBO() const noexcept { return m_giActiveFlagSSBO; }
+    [[nodiscard]] const GpuBuffer &giActiveListSSBO() const noexcept { return m_giActiveListSSBO; }
+    [[nodiscard]] const GpuBuffer &giDispatchCmdSSBO() const noexcept { return m_giDispatchCmdSSBO; }
+    [[nodiscard]] const GpuBuffer &giStagingShSSBO() const noexcept { return m_giStagingShSSBO; }
+    [[nodiscard]] const GpuBuffer &giOctCacheSSBO() const noexcept { return m_giOctCacheSSBO; }
+    [[nodiscard]] glm::uvec3 giProbeDims() const noexcept { return m_giProbeDims; }
+    [[nodiscard]] bool hasGiGrid() const noexcept { return m_mazeGridTex != 0 && m_giProbeDims.x > 0; }
 
     [[nodiscard]] GLuint albedoArrayTexId() const noexcept { return m_albedoArrayTex; }
     [[nodiscard]] GLuint ormArrayTexId() const noexcept { return m_ormArrayTex; }
@@ -141,6 +157,19 @@ private:
     GLuint m_ormArrayTex = 0;
     GLuint m_normalArrayTex = 0;
     GLuint m_emptyVao = 0;
+
+    GLuint m_mazeGridTex = 0;
+    std::array<GLuint, 3> m_giShTex{0, 0, 0};
+    GpuBuffer m_giProbeMetaSSBO;
+    GpuBuffer m_giActiveFlagSSBO;
+    GpuBuffer m_giActiveListSSBO;
+    GpuBuffer m_giDispatchCmdSSBO;
+    GpuBuffer m_giStagingShSSBO;
+    GpuBuffer m_giOctCacheSSBO;
+    glm::ivec2 m_giMapSize{0};
+    glm::uvec3 m_giProbeDims{0u};
+    float m_giCellSize = 3.0f;
+    float m_giWallHeight = 3.5f;
 };
 
 } // namespace game::render

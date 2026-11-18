@@ -104,12 +104,24 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     const std::filesystem::path shaderDir = std::filesystem::exists(exeShaderDir) ? exeShaderDir : (std::filesystem::current_path() / "shaders");
     game::render::Renderer renderer(window.width(), window.height(), shaderDir);
 
+    auto syncSceneGpuData = [&](const game::MazeMapData &mazeMap, const game::MazeSceneHandles &handles, float wallHeight)
+    {
+        std::vector<std::uint8_t> gridKinds(mazeMap.cells.size(), 1u);
+        for (std::size_t i = 0; i < mazeMap.cells.size(); ++i)
+        {
+            const game::CellKind k = mazeMap.cells[i];
+            gridKinds[i] = (k == game::CellKind::Wall) ? 0u : ((k == game::CellKind::Courtyard) ? 2u : 1u);
+        }
+        renderer.resources().setPointLights(handles.pointLights);
+        renderer.resources().initGiGrid(mazeMap.size, mazeMap.cellSize, wallHeight, gridKinds);
+    };
+
     const game::MazeGenDesc mapDesc{};
     const game::MazeSceneDesc sceneDesc{};
 
     game::MazeMapData map = game::generateMaze(mapDesc);
     game::MazeSceneHandles sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc);
-    renderer.resources().setPointLights(sceneHandles.pointLights);
+    syncSceneGpuData(map, sceneHandles, sceneDesc.wallHeight);
 
     game::GameSession session;
     session.reset(map, sceneHandles);
@@ -146,7 +158,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             renderer.resources().scene() = game::render::MegaScene{};
             map = game::generateMaze(mapDesc);
             sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc);
-            renderer.resources().setPointLights(sceneHandles.pointLights);
+            syncSceneGpuData(map, sceneHandles, sceneDesc.wallHeight);
             session.reset(map, sceneHandles);
         }
 

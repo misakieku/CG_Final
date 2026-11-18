@@ -35,6 +35,13 @@ void CompositePass::execute(const RenderContext &ctx, RenderResources &res)
     glBindTextureUnit(1, res.gbuffer1().id());
     glBindTextureUnit(2, res.depthTex().id());
     glBindTextureUnit(3, res.shadowDepthTex().id());
+    if (res.hasGiGrid())
+    {
+        glBindTextureUnit(4, res.giShTexId(0));
+        glBindTextureUnit(5, res.giShTexId(1));
+        glBindTextureUnit(6, res.giShTexId(2));
+        glBindTextureUnit(7, res.mazeGridTexId());
+    }
 
     res.drawFullscreenTriangle();
 }

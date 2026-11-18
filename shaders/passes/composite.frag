@@ -4,11 +4,16 @@ in vec2 vUV;
 #include "common/frame_ubo.glsl"
 #include "common/clustered_lights_ro.glsl"
 #include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
 
 layout(binding = 0) uniform sampler2D uGBuffer0; // Albedo.rgb + AO
 layout(binding = 1) uniform sampler2D uGBuffer1; // Normal.xyz + Roughness
 layout(binding = 2) uniform sampler2D uDepthTex; // Reversed-Z [0, 1]
 layout(binding = 3) uniform sampler2DShadow uShadowMap;
+layout(binding = 4) uniform sampler3D uGiSh0;
+layout(binding = 5) uniform sampler3D uGiSh1;
+layout(binding = 6) uniform sampler3D uGiSh2;
+layout(binding = 7) uniform usampler2D uMazeGrid;
 
 out vec4 FragColor;
 
@@ -68,15 +73,18 @@ void main()
     float shininess = mix(128.0, 10.0, roughness * roughness);
     float specScale = (1.0 - roughness) * 0.55;
 
-    // Shadowed cool night moonlight + subtle deep ambient fill
+    // Shadowed cool night moonlight + sparse multi-bounce 3D L1 SH Probe GI
     vec3 moonH = normalize(kMoonDir + V);
     float moonNdotL = max(dot(N, kMoonDir), 0.0);
     float moonSpec = pow(max(dot(N, moonH), 0.0), shininess) * specScale;
     float moonShadow = sampleDirectionalShadow(worldPos, N, moonNdotL);
-    vec3 lighting = albedo * vec3(0.024, 0.030, 0.046) * ao
+    vec3 indirectGi = (uGiDims.w > 0u)
+        ? sampleProbeGiFiltered(worldPos, N, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
+        : vec3(0.024, 0.030, 0.046);
+    vec3 lighting = albedo * (indirectGi + vec3(0.006, 0.008, 0.012)) * ao
                   + (albedo * moonNdotL + vec3(moonSpec)) * kMoonColor * (0.78 * moonShadow);
 
-    // Clustered point lights
+    // Clustered point lights (with 2D grid wall occlusion so torches do not bleed through solid walls)
     uint clusterId = computeClusterId(vUV, worldPos);
     uint maxPerCluster = uClusterDims.w;
     uint count = min(ClusterCounts[clusterId], maxPerCluster);
@@ -103,12 +111,17 @@ void main()
         {
             continue;
         }
+        float wallVis = (uGiDims.w > 0u) ? evalPointLightWallVisibility(worldPos + N * 0.06, light.positionRadius.xyz, uMazeGrid) : 1.0;
+        if (wallVis <= 1e-4)
+        {
+            continue;
+        }
 
         float atten = computePointLightAttenuation(d2, radius);
         float flicker = computeFlameFlicker(t, lightIdx);
         vec3 H = normalize(L + V);
         float spec = pow(max(dot(N, H), 0.0), shininess) * specScale;
-        vec3 radiance = light.colorIntensity.rgb * (light.colorIntensity.w * atten * flicker);
+        vec3 radiance = light.colorIntensity.rgb * (light.colorIntensity.w * atten * flicker * wallVis);
         lighting += (albedo * NdotL + vec3(spec)) * radiance;
     }
 

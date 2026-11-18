@@ -91,20 +91,21 @@ RenderResources::RenderResources()
 
 RenderResources::~RenderResources()
 {
-    if (m_albedoArrayTex != 0)
+    auto delTex = [](GLuint &id)
     {
-        glDeleteTextures(1, &m_albedoArrayTex);
-        m_albedoArrayTex = 0;
-    }
-    if (m_ormArrayTex != 0)
+        if (id != 0)
+        {
+            glDeleteTextures(1, &id);
+            id = 0;
+        }
+    };
+    delTex(m_albedoArrayTex);
+    delTex(m_ormArrayTex);
+    delTex(m_normalArrayTex);
+    delTex(m_mazeGridTex);
+    for (GLuint &sh : m_giShTex)
     {
-        glDeleteTextures(1, &m_ormArrayTex);
-        m_ormArrayTex = 0;
-    }
-    if (m_normalArrayTex != 0)
-    {
-        glDeleteTextures(1, &m_normalArrayTex);
-        m_normalArrayTex = 0;
+        delTex(sh);
     }
     if (m_emptyVao != 0)
     {
@@ -251,7 +252,106 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
     ubo.shadowFrustumPlanes = extractZeroToOneFrustumPlanes(ubo.lightViewProj);
     ubo.shadowParams = glm::vec4(1.0f / static_cast<float>(kShadowMapSize), kShadowHalfExtent, 1.0f, 0.0f);
 
+    if (hasGiGrid())
+    {
+        const float stepXZ = m_giCellSize * 0.5f;
+        const float stepY = m_giWallHeight * 0.25f;
+        ubo.giGridOrigin = glm::vec4(stepXZ * 0.5f, stepY * 0.5f, stepXZ * 0.5f, stepXZ);
+        ubo.giGridInvStep = glm::vec4(1.0f / stepXZ, 1.0f / stepY, 1.0f / stepXZ, m_giCellSize);
+        ubo.giDims = glm::uvec4(m_giProbeDims.x, m_giProbeDims.y, m_giProbeDims.z, m_giProbeDims.x * m_giProbeDims.y * m_giProbeDims.z);
+        ubo.giMisc = glm::vec4(m_giWallHeight, static_cast<float>(m_giMapSize.x), static_cast<float>(m_giMapSize.y), 0.68f);
+    }
+
     std::memcpy(m_frameUbo.mappedPtr(), &ubo, sizeof(FrameUniforms));
+}
+
+void RenderResources::initGiGrid(glm::ivec2 gridSize, float cellSize, float wallHeight, std::span<const std::uint8_t> cellKinds)
+{
+    if (gridSize.x <= 0 || gridSize.y <= 0 || cellKinds.size() < static_cast<std::size_t>(gridSize.x * gridSize.y))
+    {
+        return;
+    }
+
+    if (m_mazeGridTex != 0)
+    {
+        glDeleteTextures(1, &m_mazeGridTex);
+        m_mazeGridTex = 0;
+    }
+    for (GLuint &sh : m_giShTex)
+    {
+        if (sh != 0)
+        {
+            glDeleteTextures(1, &sh);
+            sh = 0;
+        }
+    }
+
+    m_giMapSize = gridSize;
+    m_giCellSize = cellSize;
+    m_giWallHeight = wallHeight;
+    m_giProbeDims = glm::uvec3(static_cast<std::uint32_t>(gridSize.x * 2), 5u, static_cast<std::uint32_t>(gridSize.y * 2));
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_mazeGridTex);
+    glTextureStorage2D(m_mazeGridTex, 1, GL_R8UI, gridSize.x, gridSize.y);
+    glTextureParameteri(m_mazeGridTex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(m_mazeGridTex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTextureParameteri(m_mazeGridTex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_mazeGridTex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTextureSubImage2D(m_mazeGridTex, 0, 0, 0, gridSize.x, gridSize.y, GL_RED_INTEGER, GL_UNSIGNED_BYTE, cellKinds.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+    const GLsizei nx = static_cast<GLsizei>(m_giProbeDims.x);
+    const GLsizei ny = static_cast<GLsizei>(m_giProbeDims.y);
+    const GLsizei nz = static_cast<GLsizei>(m_giProbeDims.z);
+    const std::array<float, 4> zeroClear{0.0f, 0.0f, 0.0f, 0.0f};
+    for (GLuint &sh : m_giShTex)
+    {
+        glCreateTextures(GL_TEXTURE_3D, 1, &sh);
+        glTextureStorage3D(sh, 1, GL_RGBA16F, nx, ny, nz);
+        glTextureParameteri(sh, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(sh, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(sh, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(sh, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(sh, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glClearTexImage(sh, 0, GL_RGBA, GL_FLOAT, zeroClear.data());
+    }
+
+    const std::size_t totalProbes = static_cast<std::size_t>(m_giProbeDims.x) * m_giProbeDims.y * m_giProbeDims.z;
+    std::vector<std::uint32_t> probeMeta(totalProbes, 0u);
+    for (std::uint32_t iz = 0; iz < m_giProbeDims.z; ++iz)
+    {
+        for (std::uint32_t iy = 0; iy < m_giProbeDims.y; ++iy)
+        {
+            for (std::uint32_t ix = 0; ix < m_giProbeDims.x; ++ix)
+            {
+                const int cx = static_cast<int>(ix / 2u);
+                const int cz = static_cast<int>(iz / 2u);
+                const std::uint8_t kind = cellKinds[static_cast<std::size_t>(cz * gridSize.x + cx)];
+                const std::size_t idx = (static_cast<std::size_t>(iz) * m_giProbeDims.y + iy) * m_giProbeDims.x + ix;
+                if (kind == 0u)
+                {
+                    probeMeta[idx] = 0u; // Solid wall interior
+                }
+                else if (iy == 4u && kind != 2u)
+                {
+                    probeMeta[idx] = 0u; // Above roof of non-courtyard cells
+                }
+                else
+                {
+                    probeMeta[idx] = 1u; // Valid, untouched so first frame blends with alpha = 1.0
+                }
+            }
+        }
+    }
+
+    m_giProbeMetaSSBO = GpuBuffer::createDynamic(totalProbes * sizeof(std::uint32_t), probeMeta.data());
+    m_giActiveFlagSSBO = GpuBuffer::createImmutable(totalProbes * sizeof(std::uint32_t));
+    m_giActiveListSSBO = GpuBuffer::createImmutable(totalProbes * sizeof(std::uint32_t));
+    m_giDispatchCmdSSBO = GpuBuffer::createDynamic(3 * sizeof(std::uint32_t));
+    m_giStagingShSSBO = GpuBuffer::createImmutable(totalProbes * 3 * sizeof(glm::vec4));
+    m_giOctCacheSSBO = GpuBuffer::createImmutable(totalProbes * 64 * sizeof(glm::uvec2));
+    m_giOctCacheSSBO.clearUint32(0u);
 }
 
 void RenderResources::drawFullscreenTriangle() const noexcept

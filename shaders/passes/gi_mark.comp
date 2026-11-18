@@ -1,0 +1,75 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/lighting_common.glsl"
+#include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
+
+layout(binding = 0) uniform sampler2D uDepthTex;
+layout(binding = 1) uniform sampler2D uGBuffer1;
+layout(binding = 2) uniform usampler2D uMazeGrid;
+
+layout(std430, binding = 7) readonly buffer GiProbeMetaBuffer
+{
+    uint ProbeMeta[];
+};
+
+layout(std430, binding = 8) buffer GiActiveFlagBuffer
+{
+    uint ActiveFlags[];
+};
+
+void main()
+{
+    if (uGiDims.w == 0u)
+    {
+        return;
+    }
+
+    // Half-res screen marking (every 2x2 pixel) touches every visible probe cell
+    ivec2 fullCoord = ivec2(gl_GlobalInvocationID.xy) * 2;
+    ivec2 screenSize = ivec2(uScreenParams.xy);
+    if (fullCoord.x >= screenSize.x || fullCoord.y >= screenSize.y)
+    {
+        return;
+    }
+
+    float depth = texelFetch(uDepthTex, fullCoord, 0).r;
+    if (depth <= 0.0)
+    {
+        return;
+    }
+
+    vec2 uv = (vec2(fullCoord) + 0.5) * uScreenParams.zw;
+    vec3 worldPos = reconstructWorldPos(uv, depth);
+    vec3 N = normalize(texelFetch(uGBuffer1, fullCoord, 0).rgb);
+
+    vec3 samplePos = worldPos + N * 0.16;
+    vec3 gridCoord = clamp((samplePos - uGiGridOrigin.xyz) * uGiGridInvStep.xyz, vec3(0.0), vec3(uGiDims.xyz - uvec3(1u)));
+    ivec3 base = min(ivec3(floor(gridCoord)), ivec3(uGiDims.xyz) - ivec3(2));
+
+    ivec2 sampleCell = clamp(ivec2(floor(samplePos.xz / uGiGridInvStep.w)), ivec2(0), ivec2(int(uGiMisc.y) - 1, int(uGiMisc.z) - 1));
+    uint sampleCellKind = texelFetch(uMazeGrid, sampleCell, 0).r;
+    bool rejectAboveRoof = (sampleCellKind != kGiCellCourtyard) && (worldPos.y <= uGiMisc.x + 0.06);
+
+    for (int oz = 0; oz <= 1; ++oz)
+    {
+        for (int oy = 0; oy <= 1; ++oy)
+        {
+            for (int ox = 0; ox <= 1; ++ox)
+            {
+                ivec3 pc = base + ivec3(ox, oy, oz);
+                if (!isGiProbeValid(pc, uMazeGrid, rejectAboveRoof))
+                {
+                    continue;
+                }
+                uint id = giProbeIndex(pc);
+                if (ProbeMeta[id] != 0u)
+                {
+                    ActiveFlags[id] = 1u;
+                }
+            }
+        }
+    }
+}
