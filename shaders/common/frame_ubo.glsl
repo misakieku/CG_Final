@@ -20,6 +20,9 @@ layout(std140, binding = 0) uniform FrameUBO
     vec4 uGiGridInvStep; // xyz = 1/probeStep, w = cellSize
     uvec4 uGiDims;       // x = nx, y = ny, z = nz, w = totalProbes
     vec4 uGiMisc;        // x = wallHeight, y = gridW, z = gridH, w = whiteboxAlbedo
+    mat4 uPrevViewProj;
+    vec4 uFogParams;     // x = density, y = anisotropy, z = heightFalloff, w = fogFar
+    uvec4 uFogDims;      // x = nx, y = ny, z = nz, w = unused
 };
 
 vec3 reconstructWorldPos(vec2 screenUV, float reversedZDepth)

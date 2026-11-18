@@ -43,9 +43,9 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     res.giStagingShSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 11);
     res.giOctCacheSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 12);
 
-    // Clear per-frame active flags & reset indirect dispatch command {0, 1, 1}
+    // Clear per-frame active flags & reset indirect dispatch commands: trace at +0, blend at +16
     res.giActiveFlagSSBO().clearUint32(0u);
-    constexpr std::array<std::uint32_t, 3> kInitDispatch{0u, 1u, 1u};
+    constexpr std::array<std::uint32_t, 8> kInitDispatch{0u, 1u, 1u, 0u, 0u, 1u, 1u, 0u};
     res.giDispatchCmdSSBO().upload(0, sizeof(kInitDispatch), kInitDispatch.data());
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
@@ -78,12 +78,12 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     glDispatchComputeIndirect(0);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 4. Blend staged L1 SH coefficients into the persistent 3D SH textures
+    // Blend staged L1 SH coefficients into the persistent 3D SH textures (64 threads/group)
     m_blendShader.use();
     glBindImageTexture(0, res.giShTexId(0), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
     glBindImageTexture(1, res.giShTexId(1), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
     glBindImageTexture(2, res.giShTexId(2), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
-    glDispatchComputeIndirect(0);
+    glDispatchComputeIndirect(16);
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 }
 

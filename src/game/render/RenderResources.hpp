@@ -21,6 +21,10 @@ inline constexpr std::uint32_t kClusterCountZ = 24;
 inline constexpr std::uint32_t kTotalClusters = kClusterCountX * kClusterCountY * kClusterCountZ;
 inline constexpr std::uint32_t kMaxLightsPerCluster = 64;
 
+inline constexpr std::uint32_t kFogVolumeWidth = 128;
+inline constexpr std::uint32_t kFogVolumeHeight = 72;
+inline constexpr std::uint32_t kFogVolumeDepth = 48;
+
 /// std430-compatible point light stored in PointLightsSSBO (binding = 4).
 struct alignas(16) GpuPointLight
 {
@@ -41,6 +45,10 @@ struct RenderContext
     std::uint32_t frameIndex = 0;
     int viewportWidth = 1280;
     int viewportHeight = 720;
+    float fogDensity = 0.024f;
+    float fogAnisotropy = 0.33f;
+    float fogHeightFalloff = 0.22f;
+    float fogFar = 56.0f;
 };
 
 /// std140 UBO bound at binding = 0 across culling, G-buffer, light culling, and lighting passes.
@@ -64,6 +72,9 @@ struct alignas(16) FrameUniforms
     glm::vec4 giGridInvStep{0.0f}; // xyz=1/probeStep, w=cellSize
     glm::uvec4 giDims{0u};        // x=nx, y=ny, z=nz, w=totalProbes
     glm::vec4 giMisc{0.0f};       // x=wallHeight, y=gridW, z=gridH, w=whiteboxAlbedo (<=0 uses albedoArray)
+    glm::mat4 prevViewProj{1.0f};
+    glm::vec4 fogParams{0.024f, 0.33f, 0.22f, 56.0f}; // x=density, y=anisotropy, z=heightFalloff, w=fogFar
+    glm::uvec4 fogDims{kFogVolumeWidth, kFogVolumeHeight, kFogVolumeDepth, 0u};
 };
 
 /// Shared GPU render targets, FBO bundles, scene buffers, clustered light buffers, and material array owned by Renderer.
@@ -118,6 +129,11 @@ public:
     [[nodiscard]] glm::uvec3 giProbeDims() const noexcept { return m_giProbeDims; }
     [[nodiscard]] bool hasGiGrid() const noexcept { return m_mazeGridTex != 0 && m_giProbeDims.x > 0; }
 
+    [[nodiscard]] GLuint fogVolumeTexId(int idx) const noexcept { return m_fogVolumeTex[static_cast<std::size_t>(idx)]; }
+    [[nodiscard]] GLuint fogAccumTexId() const noexcept { return m_fogAccumTex; }
+    [[nodiscard]] int fogWriteIndex() const noexcept { return m_fogWriteIdx; }
+    void advanceFogHistory() noexcept { m_fogWriteIdx = 1 - m_fogWriteIdx; }
+
     [[nodiscard]] GLuint albedoArrayTexId() const noexcept { return m_albedoArrayTex; }
     [[nodiscard]] GLuint ormArrayTexId() const noexcept { return m_ormArrayTex; }
     [[nodiscard]] GLuint normalArrayTexId() const noexcept { return m_normalArrayTex; }
@@ -170,6 +186,12 @@ private:
     glm::uvec3 m_giProbeDims{0u};
     float m_giCellSize = 3.0f;
     float m_giWallHeight = 3.5f;
+
+    std::array<GLuint, 2> m_fogVolumeTex{0, 0};
+    GLuint m_fogAccumTex = 0;
+    int m_fogWriteIdx = 0;
+    glm::mat4 m_prevViewProj{1.0f};
+    bool m_hasPrevViewProj = false;
 };
 
 } // namespace game::render

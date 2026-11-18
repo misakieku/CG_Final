@@ -149,6 +149,7 @@ add_executable(MazeGame
     src/game/render/passes/LightCullingPass.cpp
     src/game/render/passes/CompositePass.cpp
     src/game/render/passes/ShadowPass.cpp
+    src/game/render/passes/VolumetricFogPass.cpp
     src/game/render/passes/WaterPass.cpp
     src/game/render/passes/PostProcessPass.cpp
 )

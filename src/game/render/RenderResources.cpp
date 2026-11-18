@@ -86,6 +86,30 @@ RenderResources::RenderResources()
     m_shadowFbo.setNoColorBuffer();
     m_shadowFbo.ensureComplete();
 
+    // 3D froxel volumetric fog ping-pong history + front-to-back accumulated scatter/transmittance
+    const std::array<float, 4> zeroFog{0.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<float, 4> clearAccum{0.0f, 0.0f, 0.0f, 1.0f};
+    auto createFog3D = [](GLuint &texId, const std::array<float, 4> &clearVal)
+    {
+        glCreateTextures(GL_TEXTURE_3D, 1, &texId);
+        glTextureStorage3D(
+            texId,
+            1,
+            GL_RGBA16F,
+            static_cast<GLsizei>(kFogVolumeWidth),
+            static_cast<GLsizei>(kFogVolumeHeight),
+            static_cast<GLsizei>(kFogVolumeDepth));
+        glTextureParameteri(texId, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(texId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texId, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texId, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texId, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glClearTexImage(texId, 0, GL_RGBA, GL_FLOAT, clearVal.data());
+    };
+    createFog3D(m_fogVolumeTex[0], zeroFog);
+    createFog3D(m_fogVolumeTex[1], zeroFog);
+    createFog3D(m_fogAccumTex, clearAccum);
+
     createStarterMaterialArrays();
 }
 
@@ -107,6 +131,11 @@ RenderResources::~RenderResources()
     {
         delTex(sh);
     }
+    for (GLuint &fog : m_fogVolumeTex)
+    {
+        delTex(fog);
+    }
+    delTex(m_fogAccumTex);
     if (m_emptyVao != 0)
     {
         glDeleteVertexArrays(1, &m_emptyVao);
@@ -262,6 +291,12 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
         ubo.giMisc = glm::vec4(m_giWallHeight, static_cast<float>(m_giMapSize.x), static_cast<float>(m_giMapSize.y), 0.68f);
     }
 
+    ubo.prevViewProj = m_hasPrevViewProj ? m_prevViewProj : vp;
+    ubo.fogParams = glm::vec4(ctx.fogDensity, ctx.fogAnisotropy, ctx.fogHeightFalloff, ctx.fogFar);
+    ubo.fogDims = glm::uvec4(kFogVolumeWidth, kFogVolumeHeight, kFogVolumeDepth, 0u);
+    m_prevViewProj = vp;
+    m_hasPrevViewProj = true;
+
     std::memcpy(m_frameUbo.mappedPtr(), &ubo, sizeof(FrameUniforms));
 }
 
@@ -348,7 +383,7 @@ void RenderResources::initGiGrid(glm::ivec2 gridSize, float cellSize, float wall
     m_giProbeMetaSSBO = GpuBuffer::createDynamic(totalProbes * sizeof(std::uint32_t), probeMeta.data());
     m_giActiveFlagSSBO = GpuBuffer::createImmutable(totalProbes * sizeof(std::uint32_t));
     m_giActiveListSSBO = GpuBuffer::createImmutable(totalProbes * sizeof(std::uint32_t));
-    m_giDispatchCmdSSBO = GpuBuffer::createDynamic(3 * sizeof(std::uint32_t));
+    m_giDispatchCmdSSBO = GpuBuffer::createDynamic(8 * sizeof(std::uint32_t));
     m_giStagingShSSBO = GpuBuffer::createImmutable(totalProbes * 3 * sizeof(glm::vec4));
     m_giOctCacheSSBO = GpuBuffer::createImmutable(totalProbes * 64 * sizeof(glm::uvec2));
     m_giOctCacheSSBO.clearUint32(0u);

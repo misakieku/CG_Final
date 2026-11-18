@@ -1,5 +1,5 @@
 #version 460 core
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 #include "common/frame_ubo.glsl"
 #include "common/lighting_common.glsl"
@@ -20,6 +20,18 @@ layout(std430, binding = 9) readonly buffer GiActiveListBuffer
     uint ActiveProbeIds[];
 };
 
+layout(std430, binding = 10) readonly buffer GiDispatchCmdBuffer
+{
+    uint TraceGroupsX;
+    uint TraceGroupsY;
+    uint TraceGroupsZ;
+    uint ActiveProbeCount;
+    uint BlendGroupsX;
+    uint BlendGroupsY;
+    uint BlendGroupsZ;
+    uint BlendPad;
+};
+
 layout(std430, binding = 11) readonly buffer GiStagingShBuffer
 {
     vec4 StagingSh[];
@@ -28,6 +40,10 @@ layout(std430, binding = 11) readonly buffer GiStagingShBuffer
 void main()
 {
     uint slot = gl_GlobalInvocationID.x;
+    if (slot >= ActiveProbeCount)
+    {
+        return;
+    }
     uint probeId = ActiveProbeIds[slot];
     ivec3 pc = giCoordFromIndex(probeId);
 

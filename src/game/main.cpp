@@ -128,6 +128,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
 
     std::uint32_t frameCount = 0;
     float smoothedFps = 60.0f;
+    float fogDensity = 0.045f;
+    float fogAnisotropy = 0.33f;
 
     while (!window.shouldClose())
     {
@@ -152,6 +154,26 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         if (window.wasKeyPressed(GLFW_KEY_F5))
         {
             renderer.reloadShaders();
+        }
+        if (window.wasKeyPressed(GLFW_KEY_LEFT_BRACKET))
+        {
+            fogDensity = glm::clamp(fogDensity - 0.004f, 0.0f, 0.12f);
+            std::cout << "[VolumetricFog] density = " << fogDensity << '\n';
+        }
+        if (window.wasKeyPressed(GLFW_KEY_RIGHT_BRACKET))
+        {
+            fogDensity = glm::clamp(fogDensity + 0.004f, 0.0f, 0.12f);
+            std::cout << "[VolumetricFog] density = " << fogDensity << '\n';
+        }
+        if (window.wasKeyPressed(GLFW_KEY_MINUS))
+        {
+            fogAnisotropy = glm::clamp(fogAnisotropy - 0.05f, -0.80f, 0.85f);
+            std::cout << "[VolumetricFog] anisotropy = " << fogAnisotropy << '\n';
+        }
+        if (window.wasKeyPressed(GLFW_KEY_EQUAL))
+        {
+            fogAnisotropy = glm::clamp(fogAnisotropy + 0.05f, -0.80f, 0.85f);
+            std::cout << "[VolumetricFog] anisotropy = " << fogAnisotropy << '\n';
         }
         if (window.wasKeyPressed(GLFW_KEY_R))
         {
@@ -192,6 +214,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 .frameIndex = frameCount,
                 .viewportWidth = window.width(),
                 .viewportHeight = window.height(),
+                .fogDensity = fogDensity,
+                .fogAnisotropy = fogAnisotropy,
             };
             renderer.renderFrame(ctx);
 

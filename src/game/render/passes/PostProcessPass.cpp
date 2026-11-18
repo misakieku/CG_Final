@@ -29,6 +29,7 @@ void PostProcessPass::execute(const RenderContext &ctx, RenderResources &res)
     res.frameUbo().bindBase(GL_UNIFORM_BUFFER, 0);
     glBindTextureUnit(0, res.hdrTex().id());
     glBindTextureUnit(1, res.depthTex().id());
+    glBindTextureUnit(2, res.fogAccumTexId());
 
     res.drawFullscreenTriangle();
 }

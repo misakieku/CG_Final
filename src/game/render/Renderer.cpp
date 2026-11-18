@@ -8,6 +8,7 @@
 #include "game/render/passes/LightCullingPass.hpp"
 #include "game/render/passes/PostProcessPass.hpp"
 #include "game/render/passes/ShadowPass.hpp"
+#include "game/render/passes/VolumetricFogPass.hpp"
 #include "game/render/passes/WaterPass.hpp"
 
 #include <glad/gl.h>
@@ -36,6 +37,7 @@ Renderer::Renderer(int initialWidth, int initialHeight, std::filesystem::path sh
     addPass<GIPass>(m_shaderDir);
     addPass<CompositePass>(m_shaderDir);
     addPass<WaterPass>(m_shaderDir);
+    addPass<VolumetricFogPass>(m_shaderDir);
     addPass<PostProcessPass>(m_shaderDir);
 }
 

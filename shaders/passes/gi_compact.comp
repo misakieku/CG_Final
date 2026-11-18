@@ -2,6 +2,9 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 #include "common/frame_ubo.glsl"
+#include "common/lighting_common.glsl"
+#include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
 
 layout(std430, binding = 7) readonly buffer GiProbeMetaBuffer
 {
@@ -20,9 +23,14 @@ layout(std430, binding = 9) writeonly buffer GiActiveListBuffer
 
 layout(std430, binding = 10) buffer GiDispatchCmdBuffer
 {
-    uint NumGroupsX;
-    uint NumGroupsY;
-    uint NumGroupsZ;
+    uint TraceGroupsX;
+    uint TraceGroupsY;
+    uint TraceGroupsZ;
+    uint ActiveProbeCount;
+    uint BlendGroupsX;
+    uint BlendGroupsY;
+    uint BlendGroupsZ;
+    uint BlendPad;
 };
 
 void main()
@@ -34,7 +42,15 @@ void main()
     }
     if (ActiveFlags[id] != 0u && ProbeMeta[id] != 0u)
     {
-        uint slot = atomicAdd(NumGroupsX, 1u);
+        uint slot = atomicAdd(ActiveProbeCount, 1u);
         ActiveProbeIds[slot] = id;
+        if ((slot % uint(GI_PROBES_PER_GROUP)) == 0u)
+        {
+            atomicAdd(TraceGroupsX, 1u);
+        }
+        if ((slot & 63u) == 0u)
+        {
+            atomicAdd(BlendGroupsX, 1u);
+        }
     }
 }

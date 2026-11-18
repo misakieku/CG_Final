@@ -1,5 +1,14 @@
 #pragma once
 
+#define GI_RAY_COUNT 16
+#if GI_RAY_COUNT <= 16
+#define GI_PROBES_PER_GROUP 4
+#elif GI_RAY_COUNT <= 32
+#define GI_PROBES_PER_GROUP 2
+#else
+#define GI_PROBES_PER_GROUP 1
+#endif
+
 const uint kGiCellWall = 0u;
 const uint kGiCellRoofed = 1u;
 const uint kGiCellCourtyard = 2u;
