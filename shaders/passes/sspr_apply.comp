@@ -1,0 +1,88 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/lighting_common.glsl"
+#include "common/tonemap.glsl"
+#include "common/gi_common.glsl"
+#include "common/gbuffer_common.glsl"
+
+layout(rgba16f, binding = 0) uniform image2D uHdrImg;
+
+layout(binding = 0) uniform sampler2D uReflectTex;
+layout(binding = 1) uniform sampler2D uGBuffer1;
+layout(binding = 2) uniform sampler2D uDepthTex;
+layout(binding = 3) uniform sampler3D uGiSh0;
+layout(binding = 4) uniform sampler3D uGiSh1;
+layout(binding = 5) uniform sampler3D uGiSh2;
+layout(binding = 6) uniform usampler2D uMazeGrid;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screenSize = ivec2(uScreenParams.xy);
+    if (coord.x >= screenSize.x || coord.y >= screenSize.y || uGiMisc.w > 0.0)
+    {
+        return;
+    }
+
+    float depth = texelFetch(uDepthTex, coord, 0).r;
+    if (depth <= 0.0)
+    {
+        return;
+    }
+
+    vec4 g1 = texelFetch(uGBuffer1, coord, 0);
+    uint matId = uint(g1.b + 0.5);
+    bool isMetal = (g1.a < 0.0);
+    float roughness = clamp(abs(g1.a), 0.04, 1.0);
+    if (matId != 0u || isMetal || roughness >= 0.16)
+    {
+        return;
+    }
+
+    vec2 uv = (vec2(coord) + 0.5) * uScreenParams.zw;
+    vec3 worldPos = reconstructWorldPos(uv, depth);
+    vec3 baseN = octDecodeNormal(g1.rg);
+    vec3 V = normalize(uCameraPos.xyz - worldPos);
+
+    float puddleStrength = 1.0 - smoothstep(0.04, 0.16, roughness);
+    float t = uTimeParams.x * 1.1;
+    vec2 ripple;
+    ripple.x = sin(worldPos.x * 22.0 + worldPos.z * 15.0 + t * 1.6) * 0.5
+             + cos(worldPos.x * 34.0 - worldPos.z * 26.0 - t * 1.2) * 0.5;
+    ripple.y = cos(worldPos.x * 18.0 - worldPos.z * 24.0 + t * 1.4) * 0.5
+             + sin(worldPos.x * 31.0 + worldPos.z * 37.0 - t * 1.0) * 0.5;
+
+    vec3 N = normalize(baseN + vec3(ripple.x, 0.0, ripple.y) * (0.0045 * puddleStrength));
+    vec3 R = reflect(-V, N);
+
+    vec2 reflUV = clamp(uv + ripple * (0.0014 * puddleStrength), vec2(0.001), vec2(0.999));
+    vec4 sspr = texture(uReflectTex, reflUV);
+
+    // Match fallback reflection to sky in open courtyards and Probe GI under stone roofs
+    vec3 fallbackEnv = (uGiDims.w > 0u)
+        ? sampleProbeGiFiltered(worldPos + vec3(0.0, 0.06, 0.0), R, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
+        : evalNightSkyDetailed(R, uTimeParams.x);
+
+    if (uGiDims.w > 0u)
+    {
+        ivec2 cell = ivec2(floor(worldPos.xz / uGiGridInvStep.w));
+        uint cellKind = texelFetch(uMazeGrid, clamp(cell, ivec2(0), ivec2(uGiMisc.yz) - ivec2(1)), 0).r;
+        if (cellKind == kGiCellCourtyard)
+        {
+            vec3 skyRefl = evalNightSkyDetailed(R, uTimeParams.x);
+            fallbackEnv = mix(fallbackEnv, max(fallbackEnv, skyRefl), smoothstep(0.02, 0.25, R.y) * 0.85);
+        }
+    }
+
+    vec3 reflection = mix(fallbackEnv, sspr.rgb, sspr.a);
+    float NdotV = clamp(dot(N, V), 0.0, 1.0);
+    // Physical water Schlick Fresnel (F0 ~ 0.02): transparent dark mud steep down, mirror-like at grazing angles
+    float fresnel = 0.02 + 0.96 * pow(1.0 - NdotV, 4.0);
+
+    vec4 hdr = imageLoad(uHdrImg, coord);
+    float blendFactor = clamp(fresnel * puddleStrength, 0.0, 0.92);
+    vec3 finalRgb = mix(hdr.rgb, reflection * 0.95, blendFactor);
+    imageStore(uHdrImg, coord, vec4(finalRgb, hdr.a));
+}

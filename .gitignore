@@ -8,5 +8,6 @@ out/
 cmake-build-*/
 .cache/
 imgui.ini
+screenshots/
 
 CG_FinalProject.pdf

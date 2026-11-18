@@ -30,8 +30,18 @@ void main()
         }
         vec3 uvw = fogLinearZToUVW(vUV, linearZ, nearZ, fogFar, uFogDims.z);
         vec4 fog = texture(uFogAccumTex, uvw);
+        if (depth <= 0.0)
+        {
+            // Keep horizon mist seamless against parapets while clearing upper night sky for moon, clouds, and stars
+            vec3 skyDir = normalize(reconstructWorldPos(vUV, 0.5) - uCameraPos.xyz);
+            float skyFogWeight = mix(1.0, 0.18, smoothstep(0.04, 0.46, max(skyDir.y, 0.0)));
+            fog.rgb *= skyFogWeight;
+            fog.a = mix(1.0, fog.a, skyFogWeight);
+        }
         color = hdr * fog.a + fog.rgb;
     }
 
-    FragColor = vec4(linearToSrgb(ACESFilm(color)), 1.0);
+    vec3 srgb = linearToSrgb(ACESFilm(color));
+    float luma = dot(srgb, vec3(0.299, 0.587, 0.114));
+    FragColor = vec4(srgb, luma);
 }

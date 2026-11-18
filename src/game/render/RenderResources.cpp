@@ -153,6 +153,8 @@ void RenderResources::onResize(int width, int height)
     }
     m_width = width;
     m_height = height;
+    m_aoWidth = std::max(1, (width + 1) / 2);
+    m_aoHeight = std::max(1, (height + 1) / 2);
 
     m_gbuffer0.create2D(gl::Texture2DDesc{
         .width = m_width,
@@ -198,6 +200,61 @@ void RenderResources::onResize(int width, int height)
         .wrapS = GL_CLAMP_TO_EDGE,
         .wrapT = GL_CLAMP_TO_EDGE,
     });
+    m_ssprHashTex.create2D(gl::Texture2DDesc{
+        .width = m_width,
+        .height = m_height,
+        .internalFormat = GL_R32UI,
+        .format = GL_RED_INTEGER,
+        .type = GL_UNSIGNED_INT,
+        .minFilter = GL_NEAREST,
+        .magFilter = GL_NEAREST,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
+    m_ssprReflectTex.create2D(gl::Texture2DDesc{
+        .width = m_width,
+        .height = m_height,
+        .internalFormat = GL_RGBA16F,
+        .format = GL_RGBA,
+        .type = GL_FLOAT,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
+    m_ldrTex.create2D(gl::Texture2DDesc{
+        .width = m_width,
+        .height = m_height,
+        .internalFormat = GL_RGBA8,
+        .format = GL_RGBA,
+        .type = GL_UNSIGNED_BYTE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
+    m_aoRawTex.create2D(gl::Texture2DDesc{
+        .width = m_aoWidth,
+        .height = m_aoHeight,
+        .internalFormat = GL_R8,
+        .format = GL_RED,
+        .type = GL_UNSIGNED_BYTE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
+    m_aoTex.create2D(gl::Texture2DDesc{
+        .width = m_aoWidth,
+        .height = m_aoHeight,
+        .internalFormat = GL_R8,
+        .format = GL_RED,
+        .type = GL_UNSIGNED_BYTE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
 
     const GLenum gbufTargets[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
     m_gbufferFbo = gl::Framebuffer::create();
@@ -214,11 +271,26 @@ void RenderResources::onResize(int width, int height)
     m_puddleFbo.setDrawBuffers(gbufTargets);
     m_puddleFbo.ensureComplete();
 
-    const GLenum hdrTargets[] = {GL_COLOR_ATTACHMENT0};
+    const GLenum singleTarget[] = {GL_COLOR_ATTACHMENT0};
+    m_aoRawFbo = gl::Framebuffer::create();
+    m_aoRawFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_aoRawTex);
+    m_aoRawFbo.setDrawBuffers(singleTarget);
+    m_aoRawFbo.ensureComplete();
+
+    m_aoFbo = gl::Framebuffer::create();
+    m_aoFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_aoTex);
+    m_aoFbo.setDrawBuffers(singleTarget);
+    m_aoFbo.ensureComplete();
+
     m_hdrFbo = gl::Framebuffer::create();
     m_hdrFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_hdrTex);
-    m_hdrFbo.setDrawBuffers(hdrTargets);
+    m_hdrFbo.setDrawBuffers(singleTarget);
     m_hdrFbo.ensureComplete();
+
+    m_ldrFbo = gl::Framebuffer::create();
+    m_ldrFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_ldrTex);
+    m_ldrFbo.setDrawBuffers(singleTarget);
+    m_ldrFbo.ensureComplete();
 }
 
 void RenderResources::setPointLights(std::span<const GpuPointLight> lights)
@@ -586,12 +658,35 @@ void RenderResources::createStarterMaterialArrays()
         const float bark = 0.5f + 0.5f * std::sin(u * 75.398f + v * 12.566f);
         return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.20f, 0.14f, 0.09f), glm::vec3(0.34f, 0.25f, 0.17f), ringBand)), .roughness = 0.86f, .height = 0.4f + 0.25f * bark};
     });
-    uploadLayer(7, 2.2f, [&](int x, int y) -> StarterTexel
+    // Layer 7: Stylized botanical foliage (u < 0.12 = stems, u in [0.16..0.96] = leaf cross-width with center midrib at 0.56, v = root-to-tip)
+    uploadLayer(7, 2.4f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
-        const float vein = 0.5f + 0.5f * std::sin(u * 50.265f + v * 12.566f);
-        return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.22f, 0.34f, 0.11f), glm::vec3(0.11f, 0.28f, 0.10f), u)), .roughness = 0.54f, .height = 0.45f + 0.2f * vein};
+        const float woodyToLeaf = std::clamp((u - 0.10f) * 16.0f, 0.0f, 1.0f);
+        const float leafSpan = std::abs(u - 0.56f) / 0.40f;
+        const float midrib = std::exp(-leafSpan * leafSpan * 28.0f);
+        const float lateralVein = 0.5f + 0.5f * std::sin(v * 44.0f - leafSpan * 10.5f);
+        const float tipBlend = std::clamp(v, 0.0f, 1.0f);
+
+        const glm::vec3 stemCol(0.11f, 0.21f, 0.08f);
+        const glm::vec3 baseLeaf(0.10f, 0.24f, 0.07f);
+        const glm::vec3 tipLeaf(0.24f, 0.45f, 0.14f);
+        const glm::vec3 veinTint(0.34f, 0.55f, 0.20f);
+
+        glm::vec3 leafCol = glm::mix(baseLeaf, tipLeaf, tipBlend);
+        leafCol *= 0.90f + 0.14f * lateralVein;
+        leafCol = glm::mix(leafCol, veinTint, std::clamp(midrib * 0.70f + lateralVein * 0.10f, 0.0f, 0.75f));
+
+        const glm::vec3 col = glm::mix(stemCol, leafCol, woodyToLeaf);
+        const float height = 0.38f + woodyToLeaf * (0.28f * midrib + 0.16f * lateralVein);
+        return StarterTexel{
+            .albedo = col,
+            .ao = glm::mix(0.66f, 0.96f, tipBlend),
+            .roughness = glm::mix(0.76f, 0.62f + 0.14f * (1.0f - lateralVein), woodyToLeaf),
+            .metallic = 0.0f,
+            .height = height,
+        };
     });
 
     // Layer 8: placeholder overwritten by GPU Compute Wood Bake in initBakedMaterials()

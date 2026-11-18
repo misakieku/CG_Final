@@ -1,0 +1,79 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+
+layout(r32ui, binding = 0) readonly uniform uimage2D uHashImg;
+layout(rgba16f, binding = 1) writeonly uniform image2D uReflectImg;
+
+layout(binding = 0) uniform sampler2D uHdrTex;
+layout(binding = 1) uniform sampler2D uGBuffer1;
+layout(binding = 2) uniform sampler2D uDepthTex;
+
+uint sampleNearestValidHash(ivec2 coord, ivec2 screenSize)
+{
+    uint best = imageLoad(uHashImg, coord).r;
+    if (best != 0xFFFFFFFFu)
+    {
+        return best;
+    }
+
+    // 3x3 + 2px cardinal hole-fill eliminating thin perspective gaps
+    const ivec2 kOffsets[12] = ivec2[12](
+        ivec2(0, -1), ivec2(0, 1), ivec2(-1, 0), ivec2(1, 0),
+        ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1),
+        ivec2(0, -2), ivec2(0, 2), ivec2(-2, 0), ivec2(2, 0)
+    );
+    for (int i = 0; i < 12; ++i)
+    {
+        ivec2 p = clamp(coord + kOffsets[i], ivec2(0), screenSize - ivec2(1));
+        uint h = imageLoad(uHashImg, p).r;
+        if (h < best)
+        {
+            best = h;
+        }
+    }
+    return best;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screenSize = ivec2(uScreenParams.xy);
+    if (coord.x >= screenSize.x || coord.y >= screenSize.y)
+    {
+        return;
+    }
+
+    float depth = texelFetch(uDepthTex, coord, 0).r;
+    if (depth <= 0.0)
+    {
+        imageStore(uReflectImg, coord, vec4(0.0));
+        return;
+    }
+
+    // Resolve slightly wider than puddle core so ripple UV offsets stay seam-free
+    vec4 g1 = texelFetch(uGBuffer1, coord, 0);
+    uint matId = uint(g1.b + 0.5);
+    float roughness = abs(g1.a);
+    if (matId != 0u || g1.a < 0.0 || roughness >= 0.30)
+    {
+        imageStore(uReflectImg, coord, vec4(0.0));
+        return;
+    }
+
+    uint packedRefl = sampleNearestValidHash(coord, screenSize);
+    if (packedRefl == 0xFFFFFFFFu)
+    {
+        imageStore(uReflectImg, coord, vec4(0.0));
+        return;
+    }
+
+    ivec2 srcCoord = ivec2(int(packedRefl & 0xFFFu), int((packedRefl >> 12u) & 0xFFFu));
+    vec2 srcUV = (vec2(srcCoord) + 0.5) * uScreenParams.zw;
+    vec3 reflColor = texelFetch(uHdrTex, srcCoord, 0).rgb;
+
+    float edgeFade = smoothstep(0.0, 0.06, srcUV.x) * smoothstep(1.0, 0.94, srcUV.x)
+                   * smoothstep(0.0, 0.08, srcUV.y) * smoothstep(1.0, 0.94, srcUV.y);
+    imageStore(uReflectImg, coord, vec4(reflColor, edgeFade));
+}

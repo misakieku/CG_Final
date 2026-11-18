@@ -13,7 +13,9 @@ DepthPrePass::DepthPrePass(const std::filesystem::path &shaderDir)
 void DepthPrePass::reloadShaders(const std::filesystem::path &shaderDir)
 {
     gl::Shader compiled = gl::Shader::compileFiles(shaderDir / "passes/depth_prepass.vert", shaderDir / "passes/depth_prepass.frag", shaderDir);
+    gl::Shader grassCompiled = gl::Shader::compileFiles(shaderDir / "passes/grass_depth.vert", shaderDir / "passes/depth_prepass.frag", shaderDir);
     m_depthShader = std::move(compiled);
+    m_grassDepthShader = std::move(grassCompiled);
 }
 
 void DepthPrePass::execute(const RenderContext &ctx, RenderResources &res)
@@ -43,6 +45,15 @@ void DepthPrePass::execute(const RenderContext &ctx, RenderResources &res)
         scene.bindDrawIndirectBuffer();
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(scene.meshCount()), 0);
         glBindVertexArray(0);
+    }
+
+    if (res.grass().instanceCount() > 0)
+    {
+        glDisable(GL_CULL_FACE);
+        m_grassDepthShader.use();
+        res.frameUbo().bindBase(GL_UNIFORM_BUFFER, 0);
+        res.grass().drawIndirect(0, 2);
+        glEnable(GL_CULL_FACE);
     }
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);

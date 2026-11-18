@@ -11,13 +11,6 @@
 namespace game
 {
 
-struct PointLightDesc
-{
-    glm::vec3 color{1.0f, 1.0f, 1.0f};
-    float radius = 6.0f;
-    float intensity = 2.0f;
-};
-
 struct OasisMaterialIds
 {
     std::uint32_t stoneWall = 1;

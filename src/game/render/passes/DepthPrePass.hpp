@@ -16,6 +16,7 @@ public:
 
 private:
     gl::Shader m_depthShader;
+    gl::Shader m_grassDepthShader;
 };
 
 } // namespace game::render

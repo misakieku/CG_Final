@@ -84,11 +84,11 @@ void main()
     // Damp dark soil darkening around rims and beneath standing puddles
     vec3 wetAlbedo = g0.rgb * mix(1.0, 0.42, wetMask * 0.78 + waterMask * 0.22);
 
-    // Animated micro wind ripples across flat standing puddle water
-    float t = uTimeParams.x * 1.4;
-    vec2 rp = worldPos.xz * 5.2;
-    float rx = (valueNoise(rp + vec2(t * 0.55, 0.0)) - valueNoise(rp - vec2(t * 0.55, 0.0))) * 0.032;
-    float rz = (valueNoise(rp + vec2(0.0, -t * 0.45) + 7.3) - valueNoise(rp - vec2(0.0, -t * 0.45) + 7.3)) * 0.032;
+    // Subtle micro wind ripples across flat standing puddle water
+    float t = uTimeParams.x * 1.1;
+    vec2 rp = worldPos.xz * 12.0;
+    float rx = (valueNoise(rp + vec2(t * 0.45, 0.0)) - valueNoise(rp - vec2(t * 0.45, 0.0))) * 0.006;
+    float rz = (valueNoise(rp + vec2(0.0, -t * 0.38) + 7.3) - valueNoise(rp - vec2(0.0, -t * 0.38) + 7.3)) * 0.006;
     vec3 waterN = normalize(vec3(rx * waterMask, 1.0, rz * waterMask));
 
     vec3 outN = normalize(mix(N, waterN, clamp(wetMask * 0.45 + waterMask * 0.95, 0.0, 1.0)));

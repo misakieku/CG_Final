@@ -135,10 +135,12 @@ add_executable(MazeGame
     src/game/Window.cpp
     src/game/MazeGenerator.cpp
     src/game/MazeSceneBuilder.cpp
+    src/game/FoliageGenerator.cpp
     src/game/OasisGenerator.cpp
     src/game/TextureGenerator.cpp
     src/game/VineGenerator.cpp
     src/game/render/GpuBuffer.cpp
+    src/game/render/GrassField.cpp
     src/game/render/MegaScene.cpp
     src/game/render/RenderResources.cpp
     src/game/render/Renderer.cpp
@@ -149,10 +151,13 @@ add_executable(MazeGame
     src/game/render/passes/LightCullingPass.cpp
     src/game/render/passes/CompositePass.cpp
     src/game/render/passes/PuddlePass.cpp
+    src/game/render/passes/SSAOPass.cpp
+    src/game/render/passes/SSPRPass.cpp
     src/game/render/passes/ShadowPass.cpp
     src/game/render/passes/VolumetricFogPass.cpp
     src/game/render/passes/WaterPass.cpp
     src/game/render/passes/PostProcessPass.cpp
+    src/game/render/passes/FxaaPass.cpp
 )
 target_link_libraries(MazeGame PRIVATE cg_common imgui)
 cg_set_warnings(MazeGame)

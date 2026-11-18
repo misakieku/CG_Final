@@ -16,6 +16,7 @@ public:
 
 private:
     gl::Shader m_gbufferShader;
+    gl::Shader m_grassGbufferShader;
 };
 
 } // namespace game::render

@@ -35,6 +35,7 @@ void CompositePass::execute(const RenderContext &ctx, RenderResources &res)
     glBindTextureUnit(1, res.gbuffer1().id());
     glBindTextureUnit(2, res.depthTex().id());
     glBindTextureUnit(3, res.shadowDepthTex().id());
+    glBindTextureUnit(8, res.aoTex().id());
     if (res.hasGiGrid())
     {
         glBindTextureUnit(4, res.giShTexId(0));

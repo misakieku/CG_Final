@@ -1,8 +1,9 @@
 #pragma once
 
+#include "game/FoliageGenerator.hpp"
 #include "game/MazeGenerator.hpp"
-#include "game/OasisGenerator.hpp"
 #include "game/VineGenerator.hpp"
+#include "game/render/GrassField.hpp"
 #include "game/render/MegaScene.hpp"
 #include "game/render/RenderResources.hpp"
 
@@ -21,6 +22,7 @@ struct MazeSceneHandles
     float treasureScale = 0.42f;
     std::uint32_t exitObjectId = 0;
     std::uint32_t exitLightIndex = 0;
+    std::vector<glm::vec3> bushPositions;
     std::vector<render::GpuPointLight> pointLights;
 };
 
@@ -75,11 +77,11 @@ struct MazeSceneDesc
     float vaseHeight = 0.74f;
     float cupHeight = 0.28f;
 
-    OasisGenDesc oasis{.enabled = false};
+    FoliageGenDesc foliage{};
     VineGenDesc vines{};
 };
 
-/// Populates MegaScene from MazeMapData and collects point lights (torches, candles, treasure/exit beacons).
-[[nodiscard]] MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc = {});
+/// Populates MegaScene (and optional GPU GrassField) from MazeMapData and collects point lights.
+[[nodiscard]] MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc = {}, render::GrassField *grassOut = nullptr);
 
 } // namespace game

@@ -3,11 +3,14 @@
 #include "game/render/passes/CompositePass.hpp"
 #include "game/render/passes/CullingPass.hpp"
 #include "game/render/passes/DepthPrePass.hpp"
+#include "game/render/passes/FxaaPass.hpp"
 #include "game/render/passes/GBufferPass.hpp"
 #include "game/render/passes/GIPass.hpp"
 #include "game/render/passes/LightCullingPass.hpp"
 #include "game/render/passes/PostProcessPass.hpp"
 #include "game/render/passes/PuddlePass.hpp"
+#include "game/render/passes/SSAOPass.hpp"
+#include "game/render/passes/SSPRPass.hpp"
 #include "game/render/passes/ShadowPass.hpp"
 #include "game/render/passes/VolumetricFogPass.hpp"
 #include "game/render/passes/WaterPass.hpp"
@@ -36,11 +39,14 @@ Renderer::Renderer(int initialWidth, int initialHeight, std::filesystem::path sh
     addPass<GBufferPass>(m_shaderDir);
     addPass<PuddlePass>(m_shaderDir);
     addPass<LightCullingPass>(m_shaderDir);
+    addPass<SSAOPass>(m_shaderDir);
     addPass<GIPass>(m_shaderDir);
     addPass<CompositePass>(m_shaderDir);
+    addPass<SSPRPass>(m_shaderDir);
     addPass<WaterPass>(m_shaderDir);
     addPass<VolumetricFogPass>(m_shaderDir);
     addPass<PostProcessPass>(m_shaderDir);
+    addPass<FxaaPass>(m_shaderDir);
 }
 
 bool Renderer::reloadShaders()

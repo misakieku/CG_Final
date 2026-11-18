@@ -1,0 +1,54 @@
+#version 460 core
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+#include "common/scene_types.glsl"
+#include "common/grass_common.glsl"
+
+layout(std430, binding = 0) readonly buffer GrassInstancesBuffer
+{
+    GrassInstance GrassInstances[];
+};
+
+layout(std430, binding = 1) buffer GrassCmdBuffer
+{
+    DrawElementsIndirectCommand GrassCmd;
+};
+
+layout(std430, binding = 2) writeonly buffer VisibleGrassIndicesBuffer
+{
+    uint VisibleGrassIndices[];
+};
+
+uniform int uGrassCount = 0;
+
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uGrassCount))
+    {
+        return;
+    }
+
+    GrassInstance inst = GrassInstances[id];
+    float dist = 0.0;
+    float radius = 0.0;
+    float screenPct = evalGrassScreenPct(inst, dist, radius);
+    if (dist > radius && screenPct < 0.018)
+    {
+        return;
+    }
+
+    vec3 center = inst.posYaw.xyz + vec3(0.0, 0.16 * inst.scaleSeed.y, 0.0);
+    for (int i = 0; i < 6; ++i)
+    {
+        vec4 plane = uFrustumPlanes[i];
+        if (dot(plane.xyz, center) + plane.w < -radius)
+        {
+            return;
+        }
+    }
+
+    uint slot = atomicAdd(GrassCmd.instanceCount, 1u);
+    VisibleGrassIndices[slot] = id;
+}

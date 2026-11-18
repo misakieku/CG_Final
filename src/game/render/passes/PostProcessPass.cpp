@@ -18,7 +18,7 @@ void PostProcessPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void PostProcessPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    gl::Framebuffer::bindDefault();
+    res.ldrFbo().bind();
     glViewport(0, 0, ctx.viewportWidth, ctx.viewportHeight);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);

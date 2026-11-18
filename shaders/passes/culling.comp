@@ -48,6 +48,27 @@ void main()
         return;
     }
 
+    if (uCullShadow != 0)
+    {
+        float orthoPct = obj.worldSphere.w / max(uShadowParams.y, 1.0);
+        if (orthoPct < 0.010)
+        {
+            return;
+        }
+    }
+    else
+    {
+        float dist = length(obj.worldSphere.xyz - uCameraPos.xyz);
+        if (dist > obj.worldSphere.w)
+        {
+            float screenHeightPct = (obj.worldSphere.w * abs(uProj[1][1])) / max(dist, 0.01);
+            if (screenHeightPct < 0.018)
+            {
+                return;
+            }
+        }
+    }
+
     uint localSlot = atomicAdd(Cmds[obj.meshId].instanceCount, 1u);
     uint globalSlot = Cmds[obj.meshId].baseInstance + localSlot;
     VisibleIndices[globalSlot] = objId;

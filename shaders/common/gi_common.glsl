@@ -43,6 +43,116 @@ vec3 evalNightSky(vec3 dir)
     return sky + kMoonColor * (moonGlow * 0.45);
 }
 
+float skyHash31(vec3 p)
+{
+    p = fract(p * vec3(443.897, 441.423, 437.195));
+    p += dot(p, p.yzx + 19.19);
+    return fract((p.x + p.y) * p.z);
+}
+
+float skyHash21(vec2 p)
+{
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 34.5);
+    return fract(p.x * p.y);
+}
+
+float skyNoise2D(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(skyHash21(i), skyHash21(i + vec2(1.0, 0.0)), u.x),
+        mix(skyHash21(i + vec2(0.0, 1.0)), skyHash21(i + vec2(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+float skyFbm(vec2 p)
+{
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; ++i)
+    {
+        v += a * skyNoise2D(p);
+        p = p * 2.07 + vec2(13.4, 29.1);
+        a *= 0.5;
+    }
+    return v;
+}
+
+vec3 evalNightSkyDetailed(vec3 dir, float time)
+{
+    dir = normalize(dir);
+    float up = clamp(dir.y, 0.0, 1.0);
+
+    // Atmosphere gradient + subtle diagonal Milky Way / twilight veil
+    vec3 horizonCol = vec3(0.048, 0.075, 0.145);
+    vec3 zenithCol = vec3(0.006, 0.010, 0.026);
+    vec3 sky = mix(horizonCol, zenithCol, pow(up, 0.55));
+
+    float galacticCoord = dir.x * 0.65 - dir.z * 0.76 + (skyFbm(dir.xz * 2.4) - 0.5) * 0.35;
+    float milkyWay = exp(-galacticCoord * galacticCoord * 7.5) * smoothstep(0.08, 0.55, up);
+    sky += vec3(0.016, 0.028, 0.062) * milkyWay * (0.65 + 0.35 * skyFbm(dir.xy * 5.0));
+
+    // Full moon aligned cleanly with kMoonDir + multi-band halo
+    float moonDot = dot(dir, kMoonDir);
+    float outerHalo = pow(max(moonDot, 0.0), 7.0);
+    float innerHalo = pow(max(moonDot, 0.0), 42.0);
+    sky += kMoonColor * (outerHalo * 0.30 + innerHalo * 0.55);
+
+    float moonDisc = smoothstep(0.99855, 0.99895, moonDot);
+    if (moonDisc > 0.001)
+    {
+        vec3 moonRight = normalize(cross(vec3(0.0, 1.0, 0.0), kMoonDir));
+        vec3 moonUp = cross(kMoonDir, moonRight);
+        vec2 discUV = vec2(dot(dir, moonRight), dot(dir, moonUp)) * 18.0;
+        float maria = skyFbm(discUV * 1.4 + vec2(2.3, 5.1));
+        vec3 moonSurface = mix(vec3(0.95, 1.02, 1.18), vec3(1.48, 1.56, 1.78), smoothstep(0.32, 0.68, maria));
+        sky = mix(sky, moonSurface, moonDisc);
+    }
+
+    // Drifting high-altitude night clouds with moonlight silver-lining
+    float cloudMask = 0.0;
+    if (dir.y > 0.01)
+    {
+        vec2 cloudPlane = dir.xz / max(dir.y + 0.12, 0.14);
+        vec2 wind = vec2(time * 0.010, time * 0.005);
+        float cMain = skyFbm(cloudPlane * 0.52 + wind);
+        float cDetail = skyFbm(cloudPlane * 1.25 - wind * 1.4 + vec2(4.7, 9.2));
+        float rawCloud = cMain * 0.66 + cDetail * 0.34;
+        cloudMask = smoothstep(0.41, 0.71, rawCloud) * smoothstep(0.01, 0.14, dir.y);
+
+        float edgeHighlight = smoothstep(0.38, 0.56, rawCloud) * (1.0 - smoothstep(0.56, 0.78, rawCloud));
+        float moonRim = pow(max(moonDot, 0.0), 4.0) * (0.45 + 1.15 * edgeHighlight) + pow(max(moonDot, 0.0), 20.0) * 0.65;
+        vec3 darkCloud = vec3(0.014, 0.020, 0.042);
+        vec3 litCloud = mix(vec3(0.065, 0.098, 0.185), vec3(0.45, 0.60, 0.92), clamp(moonRim, 0.0, 1.0));
+        vec3 cloudCol = mix(darkCloud, litCloud, clamp(0.24 + moonRim * 0.85, 0.0, 1.0));
+        sky = mix(sky, cloudCol, cloudMask * 0.86);
+    }
+
+    // Sparse twinkling stars peeking between cloud breaks and away from moon glare
+    if (dir.y > 0.03)
+    {
+        vec3 starCell = floor(dir * 165.0);
+        float h = skyHash31(starCell);
+        if (h > 0.9915)
+        {
+            vec3 starDir = normalize(starCell + 0.3 + 0.4 * vec3(fract(h * 17.3), fract(h * 31.7), fract(h * 53.1)));
+            float angDist = length(dir - starDir) * 165.0;
+            float pinpoint = smoothstep(0.20, 0.03, angDist);
+            float twinkle = 0.70 + 0.30 * sin(time * 1.9 + h * 62.83);
+            float vis = smoothstep(0.03, 0.20, dir.y) * (1.0 - cloudMask * 0.92) * (1.0 - moonDisc) * (1.0 - innerHalo * 0.75);
+            float mag = 0.25 + 1.15 * pow(fract(h * 41.7), 2.5);
+            vec3 starTint = mix(vec3(0.75, 0.86, 1.0), vec3(1.0, 0.94, 0.82), fract(h * 97.1));
+            sky += starTint * (pinpoint * twinkle * vis * mag);
+        }
+    }
+
+    return sky;
+}
+
 float evalL1Channel(vec4 sh, vec3 N)
 {
     float r = sh.x;

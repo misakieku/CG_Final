@@ -1,0 +1,54 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common/frame_ubo.glsl"
+
+layout(binding = 0) uniform sampler2D uDepthTex;
+layout(r32ui, binding = 0) uniform uimage2D uHashImg;
+
+void main()
+{
+    ivec2 srcCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screenSize = ivec2(uScreenParams.xy);
+    if (srcCoord.x >= screenSize.x || srcCoord.y >= screenSize.y || srcCoord.x >= 4096 || srcCoord.y >= 4096)
+    {
+        return;
+    }
+
+    float depth = texelFetch(uDepthTex, srcCoord, 0).r;
+    if (depth <= 0.0)
+    {
+        return;
+    }
+
+    vec2 srcUV = (vec2(srcCoord) + 0.5) * uScreenParams.zw;
+    vec3 worldPos = reconstructWorldPos(srcUV, depth);
+    if (worldPos.y <= 0.004)
+    {
+        return;
+    }
+
+    // Mirror geometry across the horizontal y = 0 puddle plane
+    vec3 reflWorld = vec3(worldPos.x, -worldPos.y, worldPos.z);
+    vec4 clip = uViewProj * vec4(reflWorld, 1.0);
+    if (clip.w <= 0.05)
+    {
+        return;
+    }
+
+    vec2 ndc = clip.xy / clip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0)
+    {
+        return;
+    }
+
+    ivec2 dstCoord = ivec2((ndc * 0.5 + 0.5) * uScreenParams.xy);
+    if (dstCoord.x < 0 || dstCoord.y < 0 || dstCoord.x >= screenSize.x || dstCoord.y >= screenSize.y)
+    {
+        return;
+    }
+
+    uint depthBucket = min(uint(clamp(clip.w / 64.0, 0.0, 1.0) * 254.0), 254u);
+    uint packedRefl = (depthBucket << 24u) | (uint(srcCoord.y) << 12u) | uint(srcCoord.x);
+    imageAtomicMin(uHashImg, dstCoord, packedRefl);
+}

@@ -16,6 +16,7 @@ public:
 
 private:
     gl::Shader m_cullShader;
+    gl::Shader m_grassCullShader;
     bool m_cullShadow = false;
 };
 

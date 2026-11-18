@@ -2,6 +2,7 @@
 
 #include "common/gl_raii.hpp"
 #include "game/render/GpuBuffer.hpp"
+#include "game/render/GrassField.hpp"
 #include "game/render/MegaScene.hpp"
 
 #include <glad/gl.h>
@@ -98,6 +99,8 @@ public:
 
     [[nodiscard]] MegaScene &scene() noexcept { return m_scene; }
     [[nodiscard]] const MegaScene &scene() const noexcept { return m_scene; }
+    [[nodiscard]] GrassField &grass() noexcept { return m_grass; }
+    [[nodiscard]] const GrassField &grass() const noexcept { return m_grass; }
 
     [[nodiscard]] const GpuBuffer &frameUbo() const noexcept { return m_frameUbo; }
     [[nodiscard]] const GpuBuffer &lightsSSBO() const noexcept { return m_lightsSSBO; }
@@ -112,12 +115,22 @@ public:
     [[nodiscard]] const gl::Texture &gbuffer1() const noexcept { return m_gbuffer1; }
     [[nodiscard]] const gl::Texture &depthTex() const noexcept { return m_depthTex; }
     [[nodiscard]] const gl::Texture &hdrTex() const noexcept { return m_hdrTex; }
+    [[nodiscard]] const gl::Texture &ssprHashTex() const noexcept { return m_ssprHashTex; }
+    [[nodiscard]] const gl::Texture &ssprReflectTex() const noexcept { return m_ssprReflectTex; }
+    [[nodiscard]] const gl::Texture &aoRawTex() const noexcept { return m_aoRawTex; }
+    [[nodiscard]] const gl::Texture &aoTex() const noexcept { return m_aoTex; }
+    [[nodiscard]] const gl::Texture &ldrTex() const noexcept { return m_ldrTex; }
     [[nodiscard]] const gl::Texture &shadowDepthTex() const noexcept { return m_shadowDepthTex; }
 
     [[nodiscard]] const gl::Framebuffer &gbufferFbo() const noexcept { return m_gbufferFbo; }
     [[nodiscard]] const gl::Framebuffer &puddleFbo() const noexcept { return m_puddleFbo; }
+    [[nodiscard]] const gl::Framebuffer &aoRawFbo() const noexcept { return m_aoRawFbo; }
+    [[nodiscard]] const gl::Framebuffer &aoFbo() const noexcept { return m_aoFbo; }
     [[nodiscard]] const gl::Framebuffer &hdrFbo() const noexcept { return m_hdrFbo; }
+    [[nodiscard]] const gl::Framebuffer &ldrFbo() const noexcept { return m_ldrFbo; }
     [[nodiscard]] const gl::Framebuffer &shadowFbo() const noexcept { return m_shadowFbo; }
+    [[nodiscard]] int aoWidth() const noexcept { return m_aoWidth; }
+    [[nodiscard]] int aoHeight() const noexcept { return m_aoHeight; }
 
     [[nodiscard]] GLuint mazeGridTexId() const noexcept { return m_mazeGridTex; }
     [[nodiscard]] GLuint giShTexId(int idx) const noexcept { return m_giShTex[static_cast<std::size_t>(idx)]; }
@@ -150,8 +163,11 @@ private:
 
     int m_width = 0;
     int m_height = 0;
+    int m_aoWidth = 0;
+    int m_aoHeight = 0;
 
     MegaScene m_scene;
+    GrassField m_grass;
     GpuBuffer m_frameUbo;
 
     GpuBuffer m_lightsSSBO;
@@ -163,11 +179,19 @@ private:
     gl::Texture m_gbuffer1; // RGBA16F: OctNormal.xy + MatId + SignedRoughness
     gl::Texture m_depthTex; // DEPTH_COMPONENT32F (Reversed-Z [0, 1])
     gl::Texture m_hdrTex;   // RGBA16F: Lit HDR accumulation
+    gl::Texture m_ssprHashTex;    // R32UI: Packed planar reflection source pixel + depth priority
+    gl::Texture m_ssprReflectTex; // RGBA16F: Hole-filled SSPR + night-sky reflection buffer
+    gl::Texture m_aoRawTex;       // R8 half-res raw Hemisphere SSAO
+    gl::Texture m_aoTex;          // R8 half-res bilateral-filtered contact SSAO
+    gl::Texture m_ldrTex;         // RGBA8: Tonemapped sRGB + luma in alpha for FXAA
     gl::Texture m_shadowDepthTex; // DEPTH_COMPONENT32F ([0, 1] linear directional shadow map)
 
     gl::Framebuffer m_gbufferFbo;
     gl::Framebuffer m_puddleFbo; // Color attachments only (no depth attached so depthTex can be sampled safely)
+    gl::Framebuffer m_aoRawFbo;
+    gl::Framebuffer m_aoFbo;
     gl::Framebuffer m_hdrFbo;
+    gl::Framebuffer m_ldrFbo;
     gl::Framebuffer m_shadowFbo;
 
     GLuint m_albedoArrayTex = 0;

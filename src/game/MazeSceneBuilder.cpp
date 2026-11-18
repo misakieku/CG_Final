@@ -1,5 +1,5 @@
 #include "game/MazeSceneBuilder.hpp"
-#include "game/OasisGenerator.hpp"
+#include "game/FoliageGenerator.hpp"
 #include "game/ProceduralStone.hpp"
 #include "game/VineGenerator.hpp"
 
@@ -23,10 +23,7 @@ constexpr std::uint32_t kMatFloor = 0;
 constexpr std::uint32_t kMatStoneWall = 1;
 constexpr std::uint32_t kMatGoldAccent = 2;
 constexpr std::uint32_t kMatVineMoss = 3;
-constexpr std::uint32_t kMatOasisSand = 4;
-constexpr std::uint32_t kMatOasisWater = 5;
-constexpr std::uint32_t kMatPalmBark = 6;
-constexpr std::uint32_t kMatTropicalFoliage = 7;
+constexpr std::uint32_t kMatBushFoliage = 7;
 constexpr std::uint32_t kMatWoodPlank = 8;
 
 struct LoadedSorModel
@@ -101,7 +98,7 @@ struct LoadedSorModel
     return glm::scale(m, scale);
 }
 
-void buildCourtyardParapets(const MazeMapData &map, render::MegaScene &scene, std::uint32_t bevelBoxMesh, std::span<const std::uint32_t> rockMeshes, std::uint32_t stoneMat, std::uint32_t worldFlags, float wallHeight)
+void buildCourtyardParapets(const MazeMapData &map, render::MegaScene &scene, std::uint32_t bevelBoxMesh, std::span<const std::uint32_t> rockMeshes, std::span<const std::uint32_t> archMeshes, std::uint32_t stoneMat, std::uint32_t worldFlags, std::uint32_t stoneFlags, float wallHeight)
 {
     const float cell = map.cellSize;
     const float halfCell = cell * 0.5f;
@@ -131,6 +128,30 @@ void buildCourtyardParapets(const MazeMapData &map, render::MegaScene &scene, st
 
                 if (map.inBounds(neighbor) && map.getCell(neighbor) != CellKind::Wall)
                 {
+                    // Courtyard-to-corridor portal: carved archway, heavy lintel sheathing the roof slab edge, and stepped gatehouse crown
+                    if (map.getCell(neighbor) != CellKind::Courtyard && map.isWalkable(neighbor))
+                    {
+                        const std::uint32_t archId = archMeshes[static_cast<std::size_t>(x + y) % archMeshes.size()];
+                        const glm::vec3 gateCenter = wallFace - inward * 0.22f;
+                        scene.addObject(archId, stoneMat, makeTransform(gateCenter, wallYaw, glm::vec3(1.0f)), stoneFlags);
+
+                        // Heavy beveled stone lintel wrapping the exposed roof edge & aligning with flanking wall cornices
+                        const glm::vec3 lintelPos = wallFace - inward * 0.14f + glm::vec3(0.0f, wallHeight - 0.02f, 0.0f);
+                        scene.addObject(bevelBoxMesh, stoneMat, makeTransform(lintelPos, wallYaw, glm::vec3(cell * 0.96f, 0.34f, 0.56f)), worldFlags);
+
+                        // Stepped gatehouse pediment + flanking merlons matching courtyard parapet silhouette
+                        const glm::vec3 pedimentPos = gateCenter + glm::vec3(0.0f, wallHeight + 0.24f, 0.0f);
+                        scene.addObject(bevelBoxMesh, stoneMat, makeTransform(pedimentPos, wallYaw, glm::vec3(1.26f, 0.22f, 0.50f)), worldFlags);
+                        const glm::vec3 crestPos = gateCenter + glm::vec3(0.0f, wallHeight + 0.46f, 0.0f);
+                        scene.addObject(bevelBoxMesh, stoneMat, makeTransform(crestPos, wallYaw, glm::vec3(0.56f, 0.28f, 0.54f)), worldFlags);
+
+                        for (const float side : {-1.0f, 1.0f})
+                        {
+                            const float h = 0.26f + unit(rng) * 0.14f;
+                            const glm::vec3 mPos = gateCenter + tangent * (side * 0.92f) + glm::vec3(0.0f, wallHeight + h * 0.5f + 0.06f, 0.0f);
+                            scene.addObject(bevelBoxMesh, stoneMat, makeTransform(mPos, wallYaw + (unit(rng) - 0.5f) * 0.04f, glm::vec3(0.52f, h, 0.46f)), worldFlags);
+                        }
+                    }
                     continue;
                 }
 
@@ -252,10 +273,11 @@ void buildTempleWallTrim(const MazeMapData &map, render::MegaScene &scene, std::
 
 } // namespace
 
-MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc)
+MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc, render::GrassField *grassOut)
 {
     using namespace render;
 
+    std::vector<FloorObstacleObb> floorObstacles;
     const float wallHeight = desc.wallHeight;
     const float cell = map.cellSize;
     const float totalW = static_cast<float>(map.size.x) * cell;
@@ -360,15 +382,6 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
 
     auto isClearFloorSpot = [&](glm::vec3 cand, float extraPad) -> bool
     {
-        for (const OasisSpawn &oasis : map.oases)
-        {
-            const glm::vec2 d(cand.x - oasis.center.x, cand.z - oasis.center.z);
-            const float maxR = std::max(oasis.radiusX, oasis.radiusZ) + 1.05f + extraPad;
-            if (glm::dot(d, d) < maxR * maxR)
-            {
-                return false;
-            }
-        }
         for (const glm::vec3 &tp : map.treasurePositions)
         {
             const glm::vec2 d(cand.x - tp.x, cand.z - tp.z);
@@ -459,8 +472,17 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                     const float baseYaw = static_cast<float>((k + x + y) & 1) * 1.5707963f;
                     const float yaw = baseYaw + yawJitter(paverRng);
                     const float s = scaleRand(paverRng);
-                    const std::uint32_t meshId = paverMeshes[static_cast<std::size_t>(k + x * 3 + y * 5) % paverMeshes.size()];
+                    const std::size_t meshIdx = static_cast<std::size_t>(k + x * 3 + y * 5) % paverMeshes.size();
+                    const std::uint32_t meshId = paverMeshes[meshIdx];
                     scene.addObject(meshId, kMatStoneWall, makeTransform(cand, yaw, glm::vec3(s, 0.85f + 0.35f * paverUnit(paverRng), s)), stoneFlags);
+
+                    constexpr std::array<glm::vec2, 4> kPaverHalfExtents = {{
+                        {0.44f, 0.34f},
+                        {0.36f, 0.37f},
+                        {0.49f, 0.28f},
+                        {0.31f, 0.26f},
+                    }};
+                    floorObstacles.push_back(FloorObstacleObb::fromYaw({cand.x, cand.z}, yaw, kPaverHalfExtents[meshIdx] * s));
                 }
             }
         }
@@ -528,11 +550,13 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                     {
                         m = glm::rotate(m, tiltZ, glm::vec3(0.0f, 0.0f, 1.0f));
                     }
-                    m = glm::scale(m, glm::vec3(len, 1.0f, 0.88f + 0.24f * plankUnit(plankRng)));
+                    const float plankWidthScale = 0.88f + 0.24f * plankUnit(plankRng);
+                    m = glm::scale(m, glm::vec3(len, 1.0f, plankWidthScale));
 
                     const std::uint32_t meshId = plankMeshes[static_cast<std::size_t>(p + x + y) % plankMeshes.size()];
                     // Omit kObjectWorldUVFlag so wood grain follows each plank's local length axis
                     scene.addObject(meshId, kMatWoodPlank, m, kObjectVisibleFlag);
+                    floorObstacles.push_back(FloorObstacleObb::fromYaw({pos.x, pos.z}, yaw, glm::vec2(len * 0.5f, plankW * 0.54f * plankWidthScale)));
                 }
             }
         }
@@ -544,6 +568,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         const glm::vec3 &p = map.pillars[pIdx];
         const float yaw = static_cast<float>(pIdx & 3) * 1.5707963f;
         scene.addObject(pillarVariantMeshes[pIdx % pillarVariantMeshes.size()], kMatStoneWall, makeTransform(p, yaw, glm::vec3(1.0f)), stoneFlags);
+        floorObstacles.push_back(FloorObstacleObb::fromYaw({p.x, p.z}, yaw, glm::vec2(0.42f, 0.42f)));
     }
 
     // Overhead segmented stone archways or corbelled beams along straight corridors
@@ -564,10 +589,10 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         }
     }
 
-    // Courtyard ruined cornices, weathered battlements & corner finials
+    // Courtyard ruined cornices, weathered battlements, portal gatehouses & corner finials
     if (desc.buildCourtyardParapets)
     {
-        buildCourtyardParapets(map, scene, bevelBoxMesh, rockMeshes, kMatStoneWall, worldFlags, wallHeight);
+        buildCourtyardParapets(map, scene, bevelBoxMesh, rockMeshes, archMeshes, kMatStoneWall, worldFlags, stoneFlags, wallHeight);
     }
 
     // Segmented chipped stone plinths, dado stringcourses & upper architrave trims
@@ -671,6 +696,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                 flameY = h;
             }
             scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(cPos + glm::vec3(0.0f, flameY + 0.03f, 0.0f), yaw, glm::vec3(0.045f, 0.07f, 0.045f)));
+            floorObstacles.push_back(FloorObstacleObb::fromYaw({cPos.x, cPos.z}, yaw, glm::vec2(0.18f, 0.18f)));
             maxFlameY = std::max(maxFlameY, flameY);
         }
 
@@ -688,6 +714,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         const std::uint32_t meshId = rockMeshes[i % rockMeshes.size()];
         const glm::vec3 s(rock.scale * (0.9f + 0.3f * static_cast<float>(i % 3)), rock.scale, rock.scale * (1.1f - 0.2f * static_cast<float>(i % 2)));
         scene.addObject(meshId, kMatStoneWall, makeTransform(rock.position + glm::vec3(0.0f, rock.scale * 0.32f, 0.0f), rock.yaw, s), worldFlags);
+        floorObstacles.push_back(FloorObstacleObb::fromYaw({rock.position.x, rock.position.z}, rock.yaw, glm::vec2(s.x * 0.52f, s.z * 0.52f)));
     }
 
     // Dead-end treasure pedestals + treasure.dat collectibles (+ decorative cup.dat / vase.dat accents)
@@ -765,6 +792,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                         const float s = vaseScale * (0.85f + 0.30f * unit(propRng));
                         const float posY = -vaseModel.minY * s;
                         scene.addObject(vaseModel.meshId, kMatStoneWall, makeTransform(propPos + glm::vec3(0.0f, posY, 0.0f), angleDist(propRng), glm::vec3(s)));
+                        floorObstacles.push_back(FloorObstacleObb::fromYaw({propPos.x, propPos.z}, 0.0f, glm::vec2(0.28f, 0.28f)));
 
                         if (cupModel.loaded && unit(propRng) < desc.cupWithVaseChance)
                         {
@@ -772,12 +800,14 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                             if (map.isWalkable(map.worldToCell(cupPos)))
                             {
                                 scene.addObject(cupModel.meshId, kMatGoldAccent, makeTransform(cupPos + glm::vec3(0.0f, -cupModel.minY * cupScale, 0.0f), angleDist(propRng), glm::vec3(cupScale)));
+                                floorObstacles.push_back(FloorObstacleObb::fromYaw({cupPos.x, cupPos.z}, 0.0f, glm::vec2(0.16f, 0.16f)));
                             }
                         }
                     }
                     else if (cupModel.loaded)
                     {
                         scene.addObject(cupModel.meshId, kMatGoldAccent, makeTransform(propPos + glm::vec3(0.0f, -cupModel.minY * cupScale, 0.0f), angleDist(propRng), glm::vec3(cupScale)));
+                        floorObstacles.push_back(FloorObstacleObb::fromYaw({propPos.x, propPos.z}, 0.0f, glm::vec2(0.16f, 0.16f)));
                     }
                     break;
                 }
@@ -794,23 +824,19 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         .colorIntensity = glm::vec4(desc.exitLight.color, desc.exitLight.intensity),
     });
 
-    // Procedural desert oases inside >= 5x5 open-sky courtyards
-    const OasisMaterialIds oasisMaterials{
-        .stoneWall = kMatStoneWall,
-        .warmEmber = kMatGoldAccent,
-        .sandBank = kMatOasisSand,
-        .waterSurface = kMatOasisWater,
-        .palmBark = kMatPalmBark,
-        .tropicalFoliage = kMatTropicalFoliage,
-    };
-    buildMazeOases(map, scene, rockMeshes, bevelBoxMesh, oasisMaterials, handles.pointLights, desc.oasis);
+    // Stylized courtyard bushes framing open ruins + AABB-guided crawling vines
+    handles.bushPositions = populateCourtyardBushes(map, scene, kMatBushFoliage, floorObstacles, desc.foliage);
 
-    // AABB-guided crawling & hanging dungeon vines
     VineGenDesc vineDesc = desc.vines;
     vineDesc.wallHeight = wallHeight;
     generateDungeonVines(map, scene, kMatVineMoss, vineDesc);
 
     scene.buildGpuBuffers();
+    if (grassOut != nullptr)
+    {
+        const std::vector<render::GrassInstance> grassInstances = generateMazeGrass(map, floorObstacles, desc.foliage);
+        grassOut->uploadInstances(grassInstances);
+    }
     return handles;
 }
 

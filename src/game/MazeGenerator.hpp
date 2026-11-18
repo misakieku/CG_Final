@@ -34,6 +34,13 @@ struct OasisSpawn
     std::uint32_t seed = 0;
 };
 
+struct PointLightDesc
+{
+    glm::vec3 color{1.0f, 1.0f, 1.0f};
+    float radius = 6.0f;
+    float intensity = 2.0f;
+};
+
 struct MazeMapData
 {
     glm::ivec2 size{0};

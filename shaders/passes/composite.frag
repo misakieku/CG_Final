@@ -15,6 +15,7 @@ layout(binding = 4) uniform sampler3D uGiSh0;
 layout(binding = 5) uniform sampler3D uGiSh1;
 layout(binding = 6) uniform sampler3D uGiSh2;
 layout(binding = 7) uniform usampler2D uMazeGrid;
+layout(binding = 8) uniform sampler2D uSsaoTex;
 
 out vec4 FragColor;
 
@@ -57,7 +58,9 @@ void main()
     float depth = texture(uDepthTex, vUV).r;
     if (depth <= 0.0)
     {
-        FragColor = vec4(kNightSkyColor, 1.0);
+        vec3 rayWorld = reconstructWorldPos(vUV, 0.5);
+        vec3 skyDir = normalize(rayWorld - uCameraPos.xyz);
+        FragColor = vec4(evalNightSkyDetailed(skyDir, uTimeParams.x), 1.0);
         return;
     }
 
@@ -87,9 +90,12 @@ void main()
     vec3 indirectGi = (uGiDims.w > 0u)
         ? sampleProbeGiFiltered(worldPos, N, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
         : vec3(0.024, 0.030, 0.046);
+    float ssao = texture(uSsaoTex, vUV).r;
+    float contactAo = ao * ssao;
+    float directContact = mix(1.0, ssao, 0.25);
     vec3 giTint = isMetal ? (albedo * 0.85) : diffuseAlbedo;
-    vec3 lighting = giTint * (indirectGi + vec3(0.006, 0.008, 0.012)) * ao
-                  + (diffuseAlbedo * moonNdotL + specTint * moonSpec) * kMoonColor * (0.78 * moonShadow);
+    vec3 lighting = giTint * (indirectGi + vec3(0.006, 0.008, 0.012)) * contactAo
+                  + (diffuseAlbedo * moonNdotL + specTint * moonSpec) * kMoonColor * (0.78 * moonShadow * directContact);
 
     // Clustered point lights (with C1 bilinear grid wall occlusion so torches do not bleed through solid walls)
     uint clusterId = computeClusterId(vUV, worldPos);
@@ -130,19 +136,6 @@ void main()
         float spec = pow(max(dot(N, H), 0.0), shininess) * specScale;
         vec3 radiance = light.colorIntensity.rgb * (light.colorIntensity.w * atten * flicker * wallVis);
         lighting += (diffuseAlbedo * NdotL + specTint * spec) * radiance;
-    }
-
-    // Mirror Fresnel sky/GI reflection on standing mud puddles (low roughness dielectric)
-    if (!isMetal && roughness < 0.16 && uGiMisc.w <= 0.0)
-    {
-        float puddleAmount = 1.0 - smoothstep(0.04, 0.16, roughness);
-        float NdotV = max(dot(N, V), 0.0);
-        float fresnel = 0.03 + 0.92 * pow(1.0 - NdotV, 4.0);
-        vec3 R = reflect(-V, N);
-        vec3 envBounce = (uGiDims.w > 0u)
-            ? sampleProbeGiFiltered(worldPos + N * 0.05, R, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
-            : evalNightSky(R);
-        lighting = mix(lighting, max(lighting, envBounce * 1.15), fresnel * puddleAmount * 0.72);
     }
 
     FragColor = vec4(lighting, 1.0);

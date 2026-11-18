@@ -28,7 +28,7 @@ void main()
 
     // Heightmap: remapped stone noise + masked ridged cracks -> ModifyStoneHeight
     float baseNoise = FbmScalar2D(uv, 4, 3) * 0.5 + 0.5;
-    float stoneHeight = remapHistogramScan(baseNoise, 0.5, 0.55) * 0.5;
+    float stoneHeight = remapHistogramScan(baseNoise, 0.5, 0.55) * 0.25;
 
     float crackVal = 0.0;
     float crackMask = 0.0;
