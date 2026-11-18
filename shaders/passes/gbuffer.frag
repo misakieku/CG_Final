@@ -6,16 +6,18 @@ in vec3 vWorldNormal;
 in vec2 vUV;
 flat in uint vMaterialId;
 flat in uint vFlags;
+flat in uint vObjectId;
 
 #include "common/frame_ubo.glsl"
 #include "common/scene_types.glsl"
+#include "common/gbuffer_common.glsl"
 
 layout(binding = 0) uniform sampler2DArray uAlbedoArray;
 layout(binding = 1) uniform sampler2DArray uOrmArray;
 layout(binding = 2) uniform sampler2DArray uNormalArray;
 
 layout(location = 0) out vec4 outGBuffer0; // Albedo.rgb + AO
-layout(location = 1) out vec4 outGBuffer1; // WorldNormal.xyz + Roughness
+layout(location = 1) out vec4 outGBuffer1; // OctNormal.xy + MatId + SignedRoughness
 
 vec2 computeWorldBoxUV(vec3 worldPos, vec3 worldNormal)
 {
@@ -91,42 +93,82 @@ void main()
 {
     vec3 geomN = normalize(vWorldNormal);
 
-    // Whitebox clay pass: texture/POM sampling temporarily commented out to judge silhouette & lighting
-    /*
+    if (uGiMisc.w > 0.0)
+    {
+        outGBuffer0 = vec4(vec3(uGiMisc.w), 1.0);
+        outGBuffer1 = vec4(octEncodeNormal(geomN), float(vMaterialId), 0.78);
+        return;
+    }
+
     vec2 baseUV = ((vFlags & kObjectWorldUVFlag) != 0u) ? computeWorldBoxUV(vWorldPos, geomN) : vUV;
+    // Compute derivatives before per-brick UV offset so 2x2 quad edges between bricks never spike TBN
     vec2 duvdx = dFdx(baseUV);
     vec2 duvdy = dFdy(baseUV);
+
+    bool hasStoneDetail = (vFlags & kObjectStoneDetailFlag) != 0u;
+    float brickId = 0.5;
+    float brickEdge = 0.66;
+    if (hasStoneDetail)
+    {
+        float objSalt = fract(sin(float(vObjectId) * 12.9898 + 1.37) * 43758.5453);
+        brickId = fract(vUV.x + objSalt);
+        brickEdge = clamp(vUV.y, 0.0, 1.0);
+        baseUV += vec2(brickId * 0.73, fract(brickId * 1.6180339) * 0.59);
+    }
 
     bool tbnValid = false;
     mat3 TBN = computeCotangentTbn(geomN, vWorldPos, duvdx, duvdy, tbnValid);
 
-    vec2 sampleUV = baseUV;
-    float pomScale = (vMaterialId == 0u) ? 0.022 : ((vMaterialId == 1u) ? 0.016 : 0.0);
-    if (tbnValid && pomScale > 0.0 && (vFlags & kObjectWorldUVFlag) != 0u)
-    {
-        float camDist = length(uCameraPos.xyz - vWorldPos);
-        float distFade = 1.0 - smoothstep(8.0, 15.0, camDist);
-        if (distFade > 0.01)
-        {
-            vec3 viewDirWS = normalize(uCameraPos.xyz - vWorldPos);
-            vec3 viewDirTS = transpose(TBN) * viewDirWS;
-            if (viewDirTS.z > 0.01)
-            {
-                sampleUV = parallaxOcclusionMapping(baseUV, viewDirTS, float(vMaterialId), duvdx, duvdy, pomScale * distFade);
-            }
-        }
-    }
-
-    vec3 arrayCoord = vec3(sampleUV, float(vMaterialId));
+    vec3 arrayCoord = vec3(baseUV, float(vMaterialId));
     vec4 albedoSample = textureGrad(uAlbedoArray, arrayCoord, duvdx, duvdy);
     vec4 ormSample = textureGrad(uOrmArray, arrayCoord, duvdx, duvdy);
     vec3 tangentN = textureGrad(uNormalArray, arrayCoord, duvdx, duvdy).xyz * 2.0 - 1.0;
     vec3 worldN = tbnValid ? normalize(TBN * tangentN) : geomN;
 
-    outGBuffer0 = vec4(albedoSample.rgb, ormSample.r);
-    outGBuffer1 = vec4(worldN, ormSample.g);
-    */
+    vec3 albedo = albedoSample.rgb;
+    float ao = ormSample.r;
+    float roughness = clamp(ormSample.g, 0.04, 1.0);
 
-    outGBuffer0 = vec4(vec3(0.68), 1.0);
-    outGBuffer1 = vec4(geomN, 0.78);
+    // Stylized per-brick slate color variation, crevice AO, and chipped bevel edge-wear
+    if (hasStoneDetail)
+    {
+        float toneBand = fract(brickId * 3.17);
+        vec3 darkSlateTint = vec3(0.66, 0.68, 0.74);
+        vec3 midSlateTint = vec3(0.92, 0.93, 0.96);
+        vec3 lightSlateTint = vec3(1.04, 1.04, 1.05);
+        vec3 warmSlateTint = vec3(0.98, 0.93, 0.88);
+
+        vec3 brickTint = (toneBand < 0.28)
+            ? mix(darkSlateTint, midSlateTint, smoothstep(0.0, 0.28, toneBand))
+            : ((toneBand < 0.78)
+                ? mix(midSlateTint, lightSlateTint, (toneBand - 0.28) / 0.50)
+                : mix(lightSlateTint, warmSlateTint, (toneBand - 0.78) / 0.22));
+        albedo *= brickTint;
+        roughness = clamp(roughness + (brickId - 0.5) * 0.10, 0.35, 0.95);
+
+        float creviceFactor = 1.0 - smoothstep(0.08, 0.42, brickEdge);
+        ao *= mix(1.0, 0.42, creviceFactor);
+        albedo *= mix(vec3(1.0), vec3(0.56, 0.58, 0.64), creviceFactor);
+
+        float bevelWear = smoothstep(0.76, 0.98, brickEdge);
+        vec3 wearHighlight = max(albedo * 1.24, vec3(0.48, 0.50, 0.53));
+        albedo = mix(albedo, wearHighlight, bevelWear * 0.24);
+        roughness = clamp(roughness - bevelWear * 0.04, 0.45, 0.95);
+    }
+
+    // Subtle damp floor-skirt transition near ground without darkening floor GI
+    if (vMaterialId <= 1u)
+    {
+        float macroA = sin(vWorldPos.x * 0.43 + vWorldPos.z * 0.37) * cos(vWorldPos.z * 0.51 - vWorldPos.y * 0.63);
+        float dampHeight = 1.0 - smoothstep(0.0, 0.45, max(vWorldPos.y, 0.0));
+        float dampPatch = clamp(0.45 + 0.55 * macroA, 0.0, 1.0);
+        float dampMask = dampHeight * dampPatch;
+        albedo = mix(albedo, albedo * vec3(0.76, 0.80, 0.75), dampMask * 0.32);
+        roughness = mix(roughness, max(0.36, roughness * 0.68), dampMask * 0.60);
+    }
+
+    // GBuffer1 stores OctNormal.xy, vMaterialId in B, and signed roughness in A (negative = metal)
+    float encodedRoughness = (ormSample.b > 0.5) ? -roughness : roughness;
+    outGBuffer0 = vec4(albedo, ao);
+    outGBuffer1 = vec4(octEncodeNormal(worldN), float(vMaterialId), encodedRoughness);
 }

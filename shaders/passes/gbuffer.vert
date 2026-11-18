@@ -14,6 +14,7 @@ out vec3 vWorldNormal;
 out vec2 vUV;
 flat out uint vMaterialId;
 flat out uint vFlags;
+flat out uint vObjectId;
 
 void main()
 {
@@ -26,6 +27,7 @@ void main()
     vUV = aUV;
     vMaterialId = obj.materialId;
     vFlags = obj.flags;
+    vObjectId = objId;
 
     gl_Position = uViewProj * worldPos;
 }

@@ -5,9 +5,10 @@ in vec2 vUV;
 #include "common/clustered_lights_ro.glsl"
 #include "common/tonemap.glsl"
 #include "common/gi_common.glsl"
+#include "common/gbuffer_common.glsl"
 
 layout(binding = 0) uniform sampler2D uGBuffer0; // Albedo.rgb + AO
-layout(binding = 1) uniform sampler2D uGBuffer1; // Normal.xyz + Roughness
+layout(binding = 1) uniform sampler2D uGBuffer1; // OctNormal.xy + MatId + SignedRoughness
 layout(binding = 2) uniform sampler2D uDepthTex; // Reversed-Z [0, 1]
 layout(binding = 3) uniform sampler2DShadow uShadowMap;
 layout(binding = 4) uniform sampler3D uGiSh0;
@@ -60,18 +61,23 @@ void main()
         return;
     }
 
-    vec4 g0 = texture(uGBuffer0, vUV);
-    vec4 g1 = texture(uGBuffer1, vUV);
+    ivec2 coord = ivec2(gl_FragCoord.xy);
+    vec4 g0 = texelFetch(uGBuffer0, coord, 0);
+    vec4 g1 = texelFetch(uGBuffer1, coord, 0);
 
     vec3 albedo = g0.rgb;
     float ao = g0.a;
-    vec3 N = normalize(g1.rgb);
-    float roughness = clamp(g1.a, 0.04, 1.0);
+    vec3 N = octDecodeNormal(g1.rg);
+    bool isMetal = (g1.a < 0.0);
+    float roughness = clamp(abs(g1.a), 0.04, 1.0);
+
+    vec3 diffuseAlbedo = isMetal ? (albedo * 0.18) : albedo;
+    vec3 specTint = isMetal ? albedo : vec3(1.0);
 
     vec3 worldPos = reconstructWorldPos(vUV, depth);
     vec3 V = normalize(uCameraPos.xyz - worldPos);
     float shininess = mix(128.0, 10.0, roughness * roughness);
-    float specScale = (1.0 - roughness) * 0.55;
+    float specScale = isMetal ? mix(1.45, 0.45, roughness) : ((1.0 - roughness) * 0.55);
 
     // Shadowed cool night moonlight + sparse multi-bounce 3D L1 SH Probe GI
     vec3 moonH = normalize(kMoonDir + V);
@@ -81,10 +87,11 @@ void main()
     vec3 indirectGi = (uGiDims.w > 0u)
         ? sampleProbeGiFiltered(worldPos, N, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
         : vec3(0.024, 0.030, 0.046);
-    vec3 lighting = albedo * (indirectGi + vec3(0.006, 0.008, 0.012)) * ao
-                  + (albedo * moonNdotL + vec3(moonSpec)) * kMoonColor * (0.78 * moonShadow);
+    vec3 giTint = isMetal ? (albedo * 0.85) : diffuseAlbedo;
+    vec3 lighting = giTint * (indirectGi + vec3(0.006, 0.008, 0.012)) * ao
+                  + (diffuseAlbedo * moonNdotL + specTint * moonSpec) * kMoonColor * (0.78 * moonShadow);
 
-    // Clustered point lights (with 2D grid wall occlusion so torches do not bleed through solid walls)
+    // Clustered point lights (with C1 bilinear grid wall occlusion so torches do not bleed through solid walls)
     uint clusterId = computeClusterId(vUV, worldPos);
     uint maxPerCluster = uClusterDims.w;
     uint count = min(ClusterCounts[clusterId], maxPerCluster);
@@ -122,7 +129,20 @@ void main()
         vec3 H = normalize(L + V);
         float spec = pow(max(dot(N, H), 0.0), shininess) * specScale;
         vec3 radiance = light.colorIntensity.rgb * (light.colorIntensity.w * atten * flicker * wallVis);
-        lighting += (albedo * NdotL + vec3(spec)) * radiance;
+        lighting += (diffuseAlbedo * NdotL + specTint * spec) * radiance;
+    }
+
+    // Mirror Fresnel sky/GI reflection on standing mud puddles (low roughness dielectric)
+    if (!isMetal && roughness < 0.16 && uGiMisc.w <= 0.0)
+    {
+        float puddleAmount = 1.0 - smoothstep(0.04, 0.16, roughness);
+        float NdotV = max(dot(N, V), 0.0);
+        float fresnel = 0.03 + 0.92 * pow(1.0 - NdotV, 4.0);
+        vec3 R = reflect(-V, N);
+        vec3 envBounce = (uGiDims.w > 0u)
+            ? sampleProbeGiFiltered(worldPos + N * 0.05, R, uGiSh0, uGiSh1, uGiSh2, uMazeGrid)
+            : evalNightSky(R);
+        lighting = mix(lighting, max(lighting, envBounce * 1.15), fresnel * puddleAmount * 0.72);
     }
 
     FragColor = vec4(lighting, 1.0);

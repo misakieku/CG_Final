@@ -74,12 +74,17 @@ namespace
 
 PBRTextures generateFloor(const std::filesystem::path &shaderDir, int resolution)
 {
-    return generateMaterial(shaderDir, "tg/floor.comp", resolution, 24.0f, 0.055f);
+    return generateMaterial(shaderDir, "tg/floor.comp", resolution, 2.6f, 1.0f);
 }
 
 PBRTextures generateWall(const std::filesystem::path &shaderDir, int resolution)
 {
-    return generateMaterial(shaderDir, "tg/wall.comp", resolution, 1.45f, 1.0f);
+    return generateMaterial(shaderDir, "tg/wall.comp", resolution, 1.65f, 1.0f);
+}
+
+PBRTextures generateWood(const std::filesystem::path &shaderDir, int resolution)
+{
+    return generateMaterial(shaderDir, "tg/wood.comp", resolution, 2.2f, 1.0f);
 }
 
 } // namespace game

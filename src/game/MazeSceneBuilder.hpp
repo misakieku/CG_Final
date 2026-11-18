@@ -33,9 +33,9 @@ struct MazeSceneDesc
 
     // Upper floor chipped flagstones & weathered timber planks
     bool buildFloorPavers = true;
-    int paversPerCellMin = 4;
-    int paversPerCellMax = 6;
-    float paverMinSeparation = 0.56f;
+    int paversPerCellMin = 7;
+    int paversPerCellMax = 10;
+    float paverMinSeparation = 0.42f;
     float paverScaleMin = 0.84f;
     float paverScaleMax = 1.18f;
     float paverMaxYawJitterDeg = 15.0f;

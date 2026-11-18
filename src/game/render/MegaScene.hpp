@@ -58,6 +58,7 @@ inline constexpr std::uint32_t kObjectVisibleFlag = 1u << 0;
 inline constexpr std::uint32_t kObjectWorldUVFlag = 1u << 1;
 inline constexpr std::uint32_t kObjectWindSwayFlag = 1u << 2;
 inline constexpr std::uint32_t kObjectWaterFlag = 1u << 3;
+inline constexpr std::uint32_t kObjectStoneDetailFlag = 1u << 4;
 
 /// Persistent GPU scene holding all meshes in a single MegaVBO/MegaIBO and bucketed indirect buffers.
 class MegaScene

@@ -7,111 +7,12 @@ layout(rgba8, binding = 0) writeonly uniform image2D uOutAlbedo;
 layout(rgba8, binding = 1) writeonly uniform image2D uOutOrm;
 layout(r16f, binding = 2) writeonly uniform image2D uOutHeight;
 
-struct BlockSample
+float remapHistogramScan(float x, float position, float contrast)
 {
-    float edgeDist;
-    vec2 localOffset;
-    uint seed;
-};
-
-float jointOffset(int row, int col, int cols)
-{
-    int wrappedCol = ((col % cols) + cols) % cols;
-    uint h = Hash1D(uint(row * 1319 + wrappedCol * 3571 + 97));
-    return float(col) + (Hash01(h) - 0.5) * 0.34;
-}
-
-BlockSample evalTempleAshlarGrid(vec2 uv)
-{
-    // Monumental ~1.0m x 0.5m dressed sandstone ashlar courses per 3.0m wall tile
-    const int rows = 6;
-    const int cols = 3;
-    const float rowH = 1.0 / float(rows);
-
-    // Very subtle stone-saw alignment drift so seams stay architectural and straight
-    vec2 sawUV = uv + Fbm2D(uv, 6, 2) * vec2(0.0020, 0.0018);
-    sawUV = fract(sawUV);
-
-    float yScaled = sawUV.y * float(rows);
-    int row = clamp(int(floor(yScaled)), 0, rows - 1);
-    float yInRow = (yScaled - float(row)) * rowH;
-
-    // Even row count gives seamless half-block stagger across the [0, 1] tile boundary
-    float stagger = float(row & 1) * 0.5 + (Hash01(uint(row) * 7919u + 19u) - 0.5) * 0.14;
-    float xCell = fract(sawUV.x + stagger / float(cols)) * float(cols);
-
-    int baseCol = int(floor(xCell));
-    int chosenCol = baseCol;
-    float leftEdge = 0.0;
-    float rightEdge = 1.0;
-
-    for (int c = baseCol - 1; c <= baseCol + 1; ++c)
-    {
-        float e0 = jointOffset(row, c, cols);
-        float e1 = jointOffset(row, c + 1, cols);
-        if (xCell >= e0 && xCell <= e1)
-        {
-            chosenCol = ((c % cols) + cols) % cols;
-            leftEdge = e0;
-            rightEdge = e1;
-            break;
-        }
-    }
-
-    float xPos = xCell / float(cols);
-    float x0 = leftEdge / float(cols);
-    float x1 = rightEdge / float(cols);
-    float y0 = 0.0;
-    float y1 = rowH;
-
-    uint seed = Hash1D(uint(row * 919 + chosenCol * 31337 + 41));
-
-    // Occasional twin sub-blocks for varied temple masonry rhythm
-    float splitRoll = Hash01(seed ^ 0xA511u);
-    if (splitRoll < 0.16)
-    {
-        float midY = rowH * mix(0.45, 0.55, Hash01(seed ^ 0xB2u));
-        if (yInRow < midY)
-        {
-            y1 = midY;
-            seed = Hash1D(seed + 1u);
-        }
-        else
-        {
-            y0 = midY;
-            seed = Hash1D(seed + 2u);
-        }
-    }
-    else if ((x1 - x0) > (0.98 / float(cols)) && splitRoll < 0.42)
-    {
-        float midX = mix(x0, x1, mix(0.42, 0.58, Hash01(seed ^ 0xD4u)));
-        if (xPos < midX)
-        {
-            x1 = midX;
-            seed = Hash1D(seed + 3u);
-        }
-        else
-        {
-            x0 = midX;
-            seed = Hash1D(seed + 4u);
-        }
-    }
-
-    vec2 center = vec2((x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    vec2 halfSize = vec2((x1 - x0) * 0.5, (y1 - y0) * 0.5);
-    vec2 localOffset = vec2(xPos, yInRow) - center;
-
-    // Tight chiseled dry-stone ashlar seams with crisp square corners
-    const float jointHalfWidth = 0.0028;
-    const float cornerR = 0.0032;
-    vec2 innerHalf = max(halfSize - vec2(jointHalfWidth + cornerR), vec2(0.002));
-    float sdf = BoxSDF(localOffset, innerHalf) - cornerR;
-
-    BlockSample s;
-    s.edgeDist = max(-sdf, 0.0);
-    s.localOffset = localOffset;
-    s.seed = seed;
-    return s;
+    float span = clamp((1.0 - contrast) * 0.5, 1e-4, 0.5);
+    float e0 = clamp(position - span, 0.0, 1.0);
+    float e1 = clamp(position + span, 0.0, 1.0);
+    return smoothstep(e0, e1, x);
 }
 
 void main()
@@ -124,96 +25,27 @@ void main()
     }
 
     vec2 uv = (vec2(coord) + 0.5) / vec2(texSize);
-    BlockSample block = evalTempleAshlarGrid(uv);
 
-    // Localized sandstorm edge chipping along stone borders (crisp most of the way, chipped in weathered spots)
-    float chipField = FbmScalar2D(uv, 16, 3) * 0.5 + 0.5;
-    float cornerChip = smoothstep(0.52, 0.88, chipField) * 0.011 + (FbmScalar2D(uv, 48, 2) * 0.5 + 0.5) * 0.0022;
-    float erodedEdge = block.edgeDist - cornerChip;
+    // Heightmap: remapped stone noise + masked ridged cracks -> ModifyStoneHeight
+    float baseNoise = FbmScalar2D(uv, 4, 3) * 0.5 + 0.5;
+    float stoneHeight = remapHistogramScan(baseNoise, 0.5, 0.55) * 0.5;
 
-    float bevelWidth = mix(0.0045, 0.0095, chipField);
-    float stoneMask = smoothstep(0.0, bevelWidth, erodedEdge);
+    float crackVal = 0.0;
+    float crackMask = 0.0;
+    MaskedRidgedMultifractal2D(uv, 5.0, 3.0, 5.0, 2.0, crackVal, crackMask);
+    float finalCrack = crackVal * crackMask;
 
-    // Per-block quarry sedimentary sandstone bedding (horizontal undulating strata shifted & tilted slightly per block)
-    float strataShift = Hash01(block.seed ^ 0x3141u) * 0.85;
-    float strataTilt = (Hash01(block.seed ^ 0x2718u) - 0.5) * 0.07;
-    float strataWarp = GradientNoise2D(vec2(uv.x * 4.0, uv.y * 4.0), ivec2(4, 4)) * 0.035;
-    vec2 strataCoord = vec2(uv.x, uv.y + strataShift + block.localOffset.x * strataTilt + strataWarp);
+    float height = clamp(ModifyStoneHeight(uv, finalCrack, crackMask, stoneHeight), 0.0, 1.0);
 
-    float strataCoarse = GradientNoise2D(strataCoord * vec2(3.0, 16.0), ivec2(3, 16)) * 0.5 + 0.5;
-    float strataFine = GradientNoise2D(strataCoord * vec2(6.0, 40.0), ivec2(6, 40)) * 0.5 + 0.5;
-    float strataBands = SoftTerrace(strataCoarse * 0.65 + strataFine * 0.35, 6.0, 0.24);
-    float strataGroove = smoothstep(0.30, 0.55, strataCoarse) - smoothstep(0.55, 0.78, strataCoarse);
+    // Clean light slate linear albedo so direct/multi-bounce GI stays vivid (~whitebox brightness)
+    vec3 linearAlbedo = vec3(0.61, 0.62, 0.67);
 
-    // Sparse wind-scoured honeycomb weathering pits (tafoni) clustered on softer strata bands
-    float pitRegion = smoothstep(0.58, 0.82, FbmScalar2D(uv + vec2(7.3, 2.9), 7, 2) * 0.5 + 0.5);
-    float pitCells = 1.0 - smoothstep(0.08, 0.42, SmoothVoronoiF1(uv, ivec2(26, 26), 0.04));
-    float windPits = pitRegion * pitCells * smoothstep(0.35, 0.65, 1.0 - strataCoarse);
-
-    // Fine gritty sandstone surface grain & subtle block-level dress variation
-    float sandGrain = FbmScalar2D(uv, 48, 3) * 0.5 + 0.5;
-    float fineGrit = FbmScalar2D(uv, 96, 2) * 0.5 + 0.5;
-    float blockLevel = mix(0.84, 1.0, Hash01(block.seed ^ 0x101u));
-    float tiltAngle = Hash01(block.seed ^ 0x4567u) * 6.2831853;
-    float blockTilt = clamp(dot(block.localOffset, vec2(cos(tiltAngle), sin(tiltAngle))) * 0.14, -0.025, 0.025);
-
-    float surfaceRelief = (strataBands - 0.5) * 0.048 - strataGroove * 0.022 - windPits * 0.075
-                        + (sandGrain - 0.5) * 0.026 + (fineGrit - 0.5) * 0.016;
-    float stoneHeight = stoneMask * clamp(0.54 + 0.36 * blockLevel + blockTilt + surfaceRelief, 0.22, 1.0);
-
-    // Occasional hairline weathered fissures inside large stone blocks
-    float hairCrack;
-    float hairMask;
-    MaskedRidgedMultifractal2D(uv * vec2(1.0, 1.2), 7.0, 3.0, 4.2, 2.0, hairCrack, hairMask);
-    float crackCut = smoothstep(0.38, 0.78, hairCrack * hairMask) * stoneMask;
-    stoneHeight = max(0.0, stoneHeight - crackCut * 0.06);
-
-    // Dry recessed joints filled with windblown desert sand (instead of wet European mortar)
-    float windSandDrift = FbmScalar2D(uv * vec2(1.0, 2.0), 12, 2) * 0.5 + 0.5;
-    float jointHeight = 0.08 + windSandDrift * 0.10 + fineGrit * 0.03;
-    float finalHeight = clamp(mix(jointHeight, stoneHeight, stoneMask), 0.0, 1.0);
-
-    // Warm sun-baked desert sandstone palette harmonizing seamlessly with floor.comp & oases
-    float toneRoll = Hash01(block.seed ^ 0x5511u);
-    float shadeRoll = Hash01(block.seed ^ 0x9933u);
-
-    vec3 sunBleachedBuff = vec3(0.65, 0.56, 0.44);
-    vec3 goldenSandstone = vec3(0.59, 0.47, 0.35);
-    vec3 roseOchreStone  = vec3(0.61, 0.46, 0.36);
-    vec3 weatheredUmber  = vec3(0.50, 0.40, 0.31);
-
-    vec3 blockSrgb = (toneRoll < 0.40)
-        ? mix(sunBleachedBuff, goldenSandstone, toneRoll / 0.40)
-        : ((toneRoll < 0.75)
-            ? mix(goldenSandstone, roseOchreStone, (toneRoll - 0.40) / 0.35)
-            : mix(roseOchreStone, weatheredUmber, (toneRoll - 0.75) / 0.25));
-
-    blockSrgb *= mix(0.88, 1.10, shadeRoll);
-
-    // Sedimentary sandstone color banding (lighter buff strata vs deeper warm ochre layers)
-    vec3 lightStrataTint = blockSrgb * vec3(1.10, 1.08, 1.04);
-    vec3 deepStrataTint  = blockSrgb * vec3(0.88, 0.83, 0.78);
-    blockSrgb = mix(deepStrataTint, lightStrataTint, clamp(strataBands * 0.80 + strataFine * 0.20, 0.0, 1.0));
-    blockSrgb *= mix(0.94, 1.05, sandGrain * 0.6 + fineGrit * 0.4);
-
-    // Light sandy dusting on chipped edges & inside pitted crevices
-    float shoulderMask = 4.0 * stoneMask * (1.0 - stoneMask);
-    vec3 desertSandSrgb = vec3(0.76, 0.63, 0.46);
-    blockSrgb = mix(blockSrgb, desertSandSrgb, clamp(shoulderMask * 0.26 + windPits * 0.22, 0.0, 0.42));
-
-    // Shadowed dry-stone seam floor with settled desert sand grains
-    vec3 seamSrgb = mix(vec3(0.36, 0.29, 0.22), desertSandSrgb * 0.84, smoothstep(0.35, 0.85, windSandDrift));
-    vec3 albedoSrgb = mix(seamSrgb, blockSrgb, stoneMask);
-    albedoSrgb = mix(albedoSrgb, vec3(0.28, 0.22, 0.17), crackCut * 0.42);
-    vec3 linearAlbedo = pow(max(albedoSrgb, vec3(0.0)), vec3(2.2));
-
-    // Matte porous sandstone PBR properties (strong joint shadow AO, dry chalky grit)
-    float ao = clamp(mix(0.42, 1.0, smoothstep(0.0, 0.36, stoneMask)) * (1.0 - windPits * 0.25) * (1.0 - crackCut * 0.28), 0.28, 1.0);
-    float stoneRough = clamp(0.82 - (strataBands - 0.5) * 0.08 + (fineGrit - 0.5) * 0.10 + windPits * 0.10, 0.66, 0.94);
-    float roughness = clamp(mix(0.95, stoneRough, stoneMask), 0.60, 0.96);
-    float metallic = 0.0;
+    // Normal (baked from height), AO, and Roughness derived directly from height
+    float hNorm = smoothstep(0.08, 0.85, height);
+    float ao = mix(0.42, 1.0, hNorm);
+    float roughness = mix(0.92, 0.72, hNorm);
 
     imageStore(uOutAlbedo, coord, vec4(linearAlbedo, 1.0));
-    imageStore(uOutOrm, coord, vec4(ao, roughness, metallic, 1.0));
-    imageStore(uOutHeight, coord, vec4(finalHeight, 0.0, 0.0, 1.0));
+    imageStore(uOutOrm, coord, vec4(ao, roughness, 0.0, 1.0));
+    imageStore(uOutHeight, coord, vec4(height, 0.0, 0.0, 1.0));
 }

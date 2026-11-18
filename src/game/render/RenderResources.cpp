@@ -288,7 +288,11 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
         ubo.giGridOrigin = glm::vec4(stepXZ * 0.5f, stepY * 0.5f, stepXZ * 0.5f, stepXZ);
         ubo.giGridInvStep = glm::vec4(1.0f / stepXZ, 1.0f / stepY, 1.0f / stepXZ, m_giCellSize);
         ubo.giDims = glm::uvec4(m_giProbeDims.x, m_giProbeDims.y, m_giProbeDims.z, m_giProbeDims.x * m_giProbeDims.y * m_giProbeDims.z);
-        ubo.giMisc = glm::vec4(m_giWallHeight, static_cast<float>(m_giMapSize.x), static_cast<float>(m_giMapSize.y), 0.68f);
+        ubo.giMisc = glm::vec4(m_giWallHeight, static_cast<float>(m_giMapSize.x), static_cast<float>(m_giMapSize.y), ctx.whiteboxMode ? 0.68f : 0.0f);
+    }
+    else
+    {
+        ubo.giMisc = glm::vec4(m_giWallHeight, 0.0f, 0.0f, ctx.whiteboxMode ? 0.68f : 0.0f);
     }
 
     ubo.prevViewProj = m_hasPrevViewProj ? m_prevViewProj : vp;
@@ -415,26 +419,27 @@ void RenderResources::createStarterMaterialArrays()
     createArray(m_ormArrayTex);
     createArray(m_normalArrayTex);
 
-    std::vector<glm::vec4> srcPixels(static_cast<std::size_t>(srcSize * srcSize));
+    struct StarterTexel
+    {
+        glm::vec3 albedo{0.5f};
+        float ao = 1.0f;
+        float roughness = 0.8f;
+        float metallic = 0.0f;
+        float height = 0.5f;
+    };
+
+    std::vector<StarterTexel> srcTexels(static_cast<std::size_t>(srcSize * srcSize));
     std::vector<std::uint8_t> albedoPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
     std::vector<std::uint8_t> ormPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
-    std::vector<std::uint8_t> flatNormalPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
+    std::vector<std::uint8_t> normalPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
 
-    for (std::size_t i = 0; i < flatNormalPixels.size(); i += 4)
-    {
-        flatNormalPixels[i + 0] = 128;
-        flatNormalPixels[i + 1] = 128;
-        flatNormalPixels[i + 2] = 255;
-        flatNormalPixels[i + 3] = 255;
-    }
-
-    auto uploadLayer = [&](int layer, auto &&generator)
+    auto uploadLayer = [&](int layer, float normalStrength, auto &&generator)
     {
         for (int y = 0; y < srcSize; ++y)
         {
             for (int x = 0; x < srcSize; ++x)
             {
-                srcPixels[static_cast<std::size_t>(y * srcSize + x)] = generator(x, y);
+                srcTexels[static_cast<std::size_t>(y * srcSize + x)] = generator(x, y);
             }
         }
 
@@ -444,142 +449,153 @@ void RenderResources::createStarterMaterialArrays()
             const float fy = static_cast<float>(y) * scale;
             const int y0 = static_cast<int>(fy) % srcSize;
             const int y1 = (y0 + 1) % srcSize;
+            const int yM = (y0 + srcSize - 1) % srcSize;
             const float ty = fy - std::floor(fy);
             for (int x = 0; x < dstSize; ++x)
             {
                 const float fx = static_cast<float>(x) * scale;
                 const int x0 = static_cast<int>(fx) % srcSize;
                 const int x1 = (x0 + 1) % srcSize;
+                const int xM = (x0 + srcSize - 1) % srcSize;
                 const float tx = fx - std::floor(fx);
 
-                const glm::vec4 c00 = srcPixels[static_cast<std::size_t>(y0 * srcSize + x0)];
-                const glm::vec4 c10 = srcPixels[static_cast<std::size_t>(y0 * srcSize + x1)];
-                const glm::vec4 c01 = srcPixels[static_cast<std::size_t>(y1 * srcSize + x0)];
-                const glm::vec4 c11 = srcPixels[static_cast<std::size_t>(y1 * srcSize + x1)];
-                const glm::vec4 rgba = glm::mix(glm::mix(c00, c10, tx), glm::mix(c01, c11, tx), ty);
+                const StarterTexel &t00 = srcTexels[static_cast<std::size_t>(y0 * srcSize + x0)];
+                const StarterTexel &t10 = srcTexels[static_cast<std::size_t>(y0 * srcSize + x1)];
+                const StarterTexel &t01 = srcTexels[static_cast<std::size_t>(y1 * srcSize + x0)];
+                const StarterTexel &t11 = srcTexels[static_cast<std::size_t>(y1 * srcSize + x1)];
+
+                auto bilerp = [&](float StarterTexel::*mem) -> float
+                {
+                    const float a = glm::mix(t00.*mem, t10.*mem, tx);
+                    const float b = glm::mix(t01.*mem, t11.*mem, tx);
+                    return glm::mix(a, b, ty);
+                };
+
+                const glm::vec3 cA = glm::mix(t00.albedo, t10.albedo, tx);
+                const glm::vec3 cB = glm::mix(t01.albedo, t11.albedo, tx);
+                const glm::vec3 albedo = glm::mix(cA, cB, ty);
+                const float ao = bilerp(&StarterTexel::ao);
+                const float roughness = bilerp(&StarterTexel::roughness);
+                const float metallic = bilerp(&StarterTexel::metallic);
+                const float height = bilerp(&StarterTexel::height);
+
+                // Seamless central difference normal from scalar height field
+                const float hL = srcTexels[static_cast<std::size_t>(y0 * srcSize + xM)].height;
+                const float hR = srcTexels[static_cast<std::size_t>(y0 * srcSize + x1)].height;
+                const float hD = srcTexels[static_cast<std::size_t>(yM * srcSize + x0)].height;
+                const float hU = srcTexels[static_cast<std::size_t>(y1 * srcSize + x0)].height;
+                const glm::vec3 nrm = glm::normalize(glm::vec3((hL - hR) * normalStrength, (hD - hU) * normalStrength, 1.0f));
 
                 const std::size_t idx = static_cast<std::size_t>((y * dstSize + x) * 4);
-                albedoPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(rgba.r, 0.0f, 1.0f) * 255.0f);
-                albedoPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(rgba.g, 0.0f, 1.0f) * 255.0f);
-                albedoPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(rgba.b, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(albedo.r, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(albedo.g, 0.0f, 1.0f) * 255.0f);
+                albedoPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(albedo.b, 0.0f, 1.0f) * 255.0f);
                 albedoPixels[idx + 3] = 255;
 
-                ormPixels[idx + 0] = 255; // AO = 1.0
-                ormPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(rgba.a, 0.0f, 1.0f) * 255.0f);
-                ormPixels[idx + 2] = 0;   // Metallic = 0.0
+                ormPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(ao, 0.0f, 1.0f) * 255.0f);
+                ormPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
+                ormPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(metallic, 0.0f, 1.0f) * 255.0f);
                 ormPixels[idx + 3] = 255;
+
+                normalPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(nrm.x * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                normalPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(nrm.y * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                normalPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(nrm.z * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                normalPixels[idx + 3] = static_cast<std::uint8_t>(std::clamp(height, 0.0f, 1.0f) * 255.0f);
             }
         }
         glTextureSubImage3D(m_albedoArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, albedoPixels.data());
         glTextureSubImage3D(m_ormArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, ormPixels.data());
-        glTextureSubImage3D(m_normalArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, flatNormalPixels.data());
+        glTextureSubImage3D(m_normalArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, normalPixels.data());
     };
 
-    // Layer 0: Starter stone floor tiles (overwritten by baked Compute floor in initBakedMaterials)
-    uploadLayer(0, [](int x, int y) -> glm::vec4
+    auto srgbToLin = [](glm::vec3 c) -> glm::vec3
     {
-        const bool grout = (x % 64 < 3) || (y % 64 < 3);
-        const float grain = 0.04f * std::sin(static_cast<float>(x) * 0.25f) * std::cos(static_cast<float>(y) * 0.25f);
-        const float base = grout ? 0.14f : (0.30f + grain);
-        return glm::vec4(base * 0.92f, base * 0.95f, base * 1.02f, grout ? 0.95f : 0.78f);
+        return glm::pow(glm::max(c, glm::vec3(0.0f)), glm::vec3(2.2f));
+    };
+
+    // Layer 0 & Layer 1: placeholders immediately overwritten by GPU Compute Bake in initBakedMaterials()
+    uploadLayer(0, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.36f, 0.38f, 0.40f}), .roughness = 0.72f}; });
+    uploadLayer(1, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.46f, 0.48f, 0.49f}), .roughness = 0.80f}; });
+
+    // Layer 2: Burnished antique metallic gold / brass with hammered surface relief for SOR relics
+    uploadLayer(2, 2.4f, [&](int x, int y) -> StarterTexel
+    {
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
+        const float hammer = 0.5f + 0.5f * std::sin(u * 62.8318f + std::sin(v * 31.4159f) * 1.4f) * std::cos(v * 62.8318f);
+        const float brush = 0.5f + 0.5f * std::sin(u * 25.1327f + v * 100.531f);
+        const float patina = 0.5f + 0.5f * std::sin(u * 12.5663f - v * 18.8495f);
+        const float height = 0.5f + (hammer - 0.5f) * 0.25f + (brush - 0.5f) * 0.10f;
+        const glm::vec3 brightGold(0.92f, 0.74f, 0.32f);
+        const glm::vec3 tarnishedGold(0.58f, 0.44f, 0.18f);
+        const glm::vec3 col = srgbToLin(glm::mix(tarnishedGold, brightGold, 0.65f + 0.35f * patina) * (0.94f + 0.10f * brush));
+        return StarterTexel{
+            .albedo = col,
+            .ao = 0.72f + 0.28f * hammer,
+            .roughness = 0.20f + 0.16f * (1.0f - brush) + 0.08f * (1.0f - patina),
+            .metallic = 0.94f,
+            .height = height,
+        };
     });
 
-    // Layer 1: Alternating stone brick wall
-    uploadLayer(1, [](int x, int y) -> glm::vec4
+    // Layer 3: Stylized damp dungeon ivy vine & leaves (linear greens matching wall stone GI balance)
+    uploadLayer(3, 2.8f, [&](int x, int y) -> StarterTexel
     {
-        const int row = y / 32;
-        const int xShifted = (x + (row % 2) * 32) % 64;
-        const bool mortar = (xShifted < 4) || (y % 32 < 4);
-        const float tone = mortar ? 0.16f : (0.38f + 0.04f * std::sin(static_cast<float>(x + row * 17) * 0.18f));
-        return glm::vec4(tone * 1.05f, tone * 0.92f, tone * 0.80f, mortar ? 0.95f : 0.82f);
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
+        const float veinWave = 0.5f + 0.5f * std::sin(v * 50.2654f + std::abs(u - 0.5f) * 18.8495f);
+        const float midrib = std::exp(-std::pow((v - 0.5f) * 12.0f, 2.0f));
+        const float mottling = 0.5f + 0.5f * std::sin(u * 25.1327f + v * 12.5663f) * std::cos(v * 31.4159f);
+        const float stemToLeaf = std::clamp((u - 0.08f) * 1.45f, 0.0f, 1.0f);
+        const glm::vec3 stemCol(0.24f, 0.17f, 0.11f);
+        const glm::vec3 deepLeaf(0.16f, 0.34f, 0.13f);
+        const glm::vec3 midribLeaf(0.29f, 0.52f, 0.19f);
+        const glm::vec3 leafCol = glm::mix(deepLeaf, midribLeaf, std::clamp(midrib * 0.65f + veinWave * 0.20f + mottling * 0.15f, 0.0f, 1.0f));
+        const glm::vec3 col = glm::mix(stemCol, leafCol, stemToLeaf);
+        const float height = 0.45f + stemToLeaf * (midrib * 0.30f + veinWave * 0.16f);
+        return StarterTexel{
+            .albedo = col,
+            .ao = 0.78f + 0.22f * veinWave,
+            .roughness = glm::mix(0.84f, 0.46f + 0.14f * (1.0f - midrib), stemToLeaf),
+            .metallic = 0.0f,
+            .height = height,
+        };
     });
 
-    // Layer 2: Burnished brass / gold for SOR props
-    uploadLayer(2, [](int x, int y) -> glm::vec4
+    // Layer 4..7: Oasis & foliage layers (preserved cleanly with periodic normals)
+    uploadLayer(4, 1.2f, [&](int x, int y) -> StarterTexel
     {
-        const float sheen = 0.03f * std::sin(static_cast<float>(x) * 0.12f + static_cast<float>(y) * 0.05f);
-        return glm::vec4(0.82f + sheen, 0.64f + sheen, 0.26f, 0.28f);
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
+        const float grain = 0.5f + 0.5f * std::sin(u * 50.265f + v * 18.849f) * std::cos(v * 50.265f);
+        const glm::vec3 col = srgbToLin(glm::mix(glm::vec3(0.24f, 0.20f, 0.14f), glm::vec3(0.56f, 0.46f, 0.31f), u));
+        return StarterTexel{.albedo = col, .roughness = glm::mix(0.45f, 0.90f, u), .height = 0.4f + 0.2f * grain};
     });
-
-    // Layer 3: Desaturated dark moss / dungeon vine green (uv.x encodes stem vs leaf tone)
-    uploadLayer(3, [](int x, int y) -> glm::vec4
+    uploadLayer(5, 0.8f, [&](int x, int y) -> StarterTexel
     {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
-        const float mottling = 0.02f * std::sin(u * 25.13f + v * 12.56f) * std::cos(v * 31.4f);
-        const float stemToLeaf = std::clamp(u, 0.0f, 1.0f);
-        const glm::vec3 stemCol(0.13f, 0.11f, 0.07f);
-        const glm::vec3 leafCol(0.14f, 0.27f, 0.09f);
-        const glm::vec3 c = glm::mix(stemCol, leafCol, stemToLeaf) + mottling;
-        return glm::vec4(c, 0.72f);
-    });
-
-    // Layer 4: Oasis sand bank (uv.x blends damp shore silt -> warm dry desert sand)
-    uploadLayer(4, [](int x, int y) -> glm::vec4
-    {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
-        const float grain = 0.025f * std::sin(u * 48.0f + v * 17.0f) * std::cos(v * 52.0f - u * 11.0f);
-        const glm::vec3 wetShore(0.24f, 0.20f, 0.14f);
-        const glm::vec3 warmSand(0.62f, 0.50f, 0.33f);
-        const float blend = std::clamp(u, 0.0f, 1.0f);
-        const glm::vec3 c = glm::mix(wetShore, warmSand, blend) + grain;
-        const float roughness = glm::mix(0.42f, 0.92f, blend);
-        return glm::vec4(c, roughness);
-    });
-
-    // Layer 5: Oasis water placeholder (WaterPass uses depth/Fresnel forward shading)
-    uploadLayer(5, [](int x, int y) -> glm::vec4
-    {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
         const float caustic = 0.5f + 0.5f * std::sin(u * 18.849f + std::sin(v * 12.566f) * 1.6f) * std::cos(v * 18.849f);
-        const glm::vec3 deepTeal(0.04f, 0.26f, 0.31f);
-        const glm::vec3 aquaTint(0.11f, 0.45f, 0.47f);
-        const glm::vec3 c = glm::mix(deepTeal, aquaTint, caustic * 0.55f);
-        return glm::vec4(c, 0.10f);
+        return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.05f, 0.24f, 0.28f), glm::vec3(0.11f, 0.40f, 0.42f), caustic * 0.55f)), .roughness = 0.12f, .height = 0.5f + 0.1f * caustic};
     });
-
-    // Layer 6: Palm trunk bark (u >= 0.35) & dark coconut husk (u < 0.35)
-    uploadLayer(6, [](int x, int y) -> glm::vec4
+    uploadLayer(6, 2.0f, [&](int x, int y) -> StarterTexel
     {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
-        if (u < 0.35f)
-        {
-            const float fiber = 0.02f * std::sin(u * 60.0f + v * 40.0f);
-            return glm::vec4(0.16f + fiber, 0.10f + fiber * 0.6f, 0.055f, 0.86f);
-        }
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
         const float ringBand = 0.5f + 0.5f * std::sin(v * 37.699f);
-        const float barkFiber = 0.025f * std::sin(u * 75.0f + v * 12.0f);
-        const glm::vec3 darkBark(0.20f, 0.14f, 0.09f);
-        const glm::vec3 lightBark(0.36f, 0.27f, 0.18f);
-        return glm::vec4(glm::mix(darkBark, lightBark, ringBand) + barkFiber, 0.88f);
+        const float bark = 0.5f + 0.5f * std::sin(u * 75.398f + v * 12.566f);
+        return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.20f, 0.14f, 0.09f), glm::vec3(0.34f, 0.25f, 0.17f), ringBand)), .roughness = 0.86f, .height = 0.4f + 0.25f * bark};
+    });
+    uploadLayer(7, 2.2f, [&](int x, int y) -> StarterTexel
+    {
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
+        const float vein = 0.5f + 0.5f * std::sin(u * 50.265f + v * 12.566f);
+        return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.22f, 0.34f, 0.11f), glm::vec3(0.11f, 0.28f, 0.10f), u)), .roughness = 0.54f, .height = 0.45f + 0.2f * vein};
     });
 
-    // Layer 7: Tropical palm frond & fern foliage (u = 0 bright midrib -> u = 1 lush blade green)
-    uploadLayer(7, [](int x, int y) -> glm::vec4
-    {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
-        const float vein = 0.022f * std::sin(u * 50.0f + v * 14.0f);
-        const glm::vec3 midribCol(0.28f, 0.42f, 0.12f);
-        const glm::vec3 frondCol(0.11f, 0.33f, 0.10f);
-        const float blend = std::clamp(u, 0.0f, 1.0f);
-        return glm::vec4(glm::mix(midribCol, frondCol, blend) + vein, 0.56f);
-    });
-
-    // Layer 8: Weathered timber plank grain along local U axis
-    uploadLayer(8, [](int x, int y) -> glm::vec4
-    {
-        const float u = static_cast<float>(x) / 255.0f;
-        const float v = static_cast<float>(y) / 255.0f;
-        const float grain = 0.5f + 0.5f * std::sin(v * 58.0f + std::sin(u * 12.566f) * 2.8f);
-        const float fine = 0.02f * std::sin(u * 30.0f + v * 120.0f);
-        const glm::vec3 darkWood(0.14f, 0.09f, 0.055f);
-        const glm::vec3 agedOak(0.26f, 0.17f, 0.10f);
-        return glm::vec4(glm::mix(darkWood, agedOak, grain) + fine, 0.84f);
-    });
+    // Layer 8: placeholder overwritten by GPU Compute Wood Bake in initBakedMaterials()
+    uploadLayer(8, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.22f, 0.17f, 0.13f}), .roughness = 0.80f}; });
 
     glGenerateTextureMipmap(m_albedoArrayTex);
     glGenerateTextureMipmap(m_ormArrayTex);
@@ -597,6 +613,7 @@ void RenderResources::initBakedMaterials(const std::filesystem::path &shaderDir)
 
     uploadBakedLayer(0, generateFloor(shaderDir, kMaterialArraySize));
     uploadBakedLayer(1, generateWall(shaderDir, kMaterialArraySize));
+    uploadBakedLayer(8, generateWood(shaderDir, kMaterialArraySize));
 
     glGenerateTextureMipmap(m_albedoArrayTex);
     glGenerateTextureMipmap(m_ormArrayTex);

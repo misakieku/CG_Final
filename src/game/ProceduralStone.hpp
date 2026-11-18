@@ -26,8 +26,28 @@ struct StoneMeshBuilder
     std::vector<render::SceneVertex> vertices;
     std::vector<std::uint32_t> indices;
 
-    void appendPolyhedron(const ConvexPolyhedron &poly, const glm::mat4 &xform = glm::mat4(1.0f))
+    void appendPolyhedron(const ConvexPolyhedron &poly, const glm::mat4 &xform = glm::mat4(1.0f), bool isRecessedCore = false)
     {
+        glm::vec3 polyCenter(0.0f);
+        std::size_t vertCount = 0;
+        for (const std::vector<glm::vec3> &face : poly.faces)
+        {
+            for (const glm::vec3 &p : face)
+            {
+                polyCenter += glm::vec3(xform * glm::vec4(p, 1.0f));
+                ++vertCount;
+            }
+        }
+        if (vertCount > 0)
+        {
+            polyCenter /= static_cast<float>(vertCount);
+        }
+
+        // Stable per-stone hash stored in idle vertex UV.x on kObjectStoneDetailFlag meshes
+        const float hDot = glm::dot(polyCenter, glm::vec3(12.9898f, 78.233f, 37.719f)) + static_cast<float>(poly.faces.size()) * 0.413f;
+        const float brickSeed = std::sin(hDot) * 43758.5453f;
+        const float brickId = brickSeed - std::floor(brickSeed);
+
         for (const std::vector<glm::vec3> &face : poly.faces)
         {
             if (face.size() < 3)
@@ -50,16 +70,14 @@ struct StoneMeshBuilder
             }
             const glm::vec3 normal = crossN / std::sqrt(lenSq);
 
-            // Orthonormal basis for planar UV fallback when kObjectWorldUVFlag is off
-            const glm::vec3 refAxis = (std::abs(normal.y) < 0.9f) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-            const glm::vec3 tangent = glm::normalize(glm::cross(refAxis, normal));
-            const glm::vec3 bitangent = glm::cross(normal, tangent);
+            // Chipped diagonal bevel strips (maxAxis < 0.92) highlight edge wear; recessed core gets crevice AO
+            const float maxAxis = std::max({std::abs(normal.x), std::abs(normal.y), std::abs(normal.z)});
+            const float edgeWeight = isRecessedCore ? 0.08f : ((maxAxis < 0.92f) ? 1.0f : 0.66f);
 
             const auto baseIdx = static_cast<std::uint32_t>(vertices.size());
             for (const glm::vec3 &p : pts)
             {
-                const glm::vec2 uv(glm::dot(p, tangent) * 0.333333f, glm::dot(p, bitangent) * 0.333333f);
-                vertices.push_back(render::SceneVertex{p, normal, uv});
+                vertices.push_back(render::SceneVertex{p, normal, glm::vec2(brickId, edgeWeight)});
             }
 
             for (std::size_t k = 1; k + 1 < pts.size(); ++k)
@@ -71,9 +89,9 @@ struct StoneMeshBuilder
         }
     }
 
-    void appendBox(glm::vec3 minP, glm::vec3 maxP)
+    void appendBox(glm::vec3 minP, glm::vec3 maxP, bool isRecessedCore = false)
     {
-        appendPolyhedron(makeBoxPolyhedron(minP, maxP));
+        appendPolyhedron(makeBoxPolyhedron(minP, maxP), glm::mat4(1.0f), isRecessedCore);
     }
 
     [[nodiscard]] static ConvexPolyhedron makeBoxPolyhedron(glm::vec3 minP, glm::vec3 maxP)
@@ -350,7 +368,7 @@ inline void sculptChippedStone(ConvexPolyhedron &poly, glm::vec3 center, glm::ve
 
     const float halfCell = cellSize * 0.5f;
     const float coreHalf = halfCell - 0.065f;
-    mb.appendBox(glm::vec3(-coreHalf, 0.0f, -coreHalf), glm::vec3(coreHalf, wallHeight, coreHalf));
+    mb.appendBox(glm::vec3(-coreHalf, 0.0f, -coreHalf), glm::vec3(coreHalf, wallHeight, coreHalf), true);
 
     constexpr int kRows = 6;
     const float rowH = wallHeight / static_cast<float>(kRows);
@@ -630,7 +648,7 @@ inline void sculptChippedSlab(ConvexPolyhedron &poly, glm::vec3 center, glm::vec
 
     // Solid backing slab overlapping neighboring wall tops by 12cm to prevent light leaks
     const float backHalf = cellSize * 0.5f + 0.12f;
-    mb.appendBox(glm::vec3(-backHalf, 0.03f, -backHalf), glm::vec3(backHalf, 0.30f, backHalf));
+    mb.appendBox(glm::vec3(-backHalf, 0.03f, -backHalf), glm::vec3(backHalf, 0.30f, backHalf), true);
 
     constexpr int kRows = 4;
     constexpr int kCols = 3;

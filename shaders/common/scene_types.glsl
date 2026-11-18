@@ -33,3 +33,4 @@ const uint kObjectVisibleFlag = 1u;
 const uint kObjectWorldUVFlag = 2u;
 const uint kObjectWindSwayFlag = 4u;
 const uint kObjectWaterFlag = 8u;
+const uint kObjectStoneDetailFlag = 16u;

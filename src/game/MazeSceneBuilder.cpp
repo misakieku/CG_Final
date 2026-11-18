@@ -241,7 +241,7 @@ void buildTempleWallTrim(const MazeMapData &map, render::MegaScene &scene, std::
 
                 // Segmented chipped chest-height dado stringcourse + upper chamfer lip
                 scene.addObject(dadoMeshes[var % dadoMeshes.size()], stoneMat, makeTransform(wallFace + inward * 0.025f + glm::vec3(0.0f, 1.00f, 0.0f), wallYaw, glm::vec3(1.0f)), worldFlags);
-                scene.addObject(bevelBoxMesh, stoneMat, makeTransform(wallFace + inward * 0.032f + glm::vec3(0.0f, 1.08f, 0.0f), wallYaw, glm::vec3(cell + 0.02f, 0.045f, 0.13f)), worldFlags);
+                scene.addObject(bevelBoxMesh, stoneMat, makeTransform(wallFace + inward * 0.032f + glm::vec3(0.0f, 1.08f, 0.0f), wallYaw, glm::vec3(cell + 0.02f, 0.045f, 0.13f)), worldFlags & ~render::kObjectStoneDetailFlag);
 
                 // Segmented upper architrave frieze ledge
                 scene.addObject(architraveMeshes[(var + 1) % architraveMeshes.size()], stoneMat, makeTransform(wallFace + inward * 0.030f + glm::vec3(0.0f, wallHeight - 0.50f, 0.0f), wallYaw, glm::vec3(1.0f)), worldFlags);
@@ -325,6 +325,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     const LoadedSorModel cupModel = tryLoadSorModel(scene, exeDir / "cup.dat", bevelBoxMesh);
 
     const std::uint32_t worldFlags = kObjectVisibleFlag | kObjectWorldUVFlag;
+    const std::uint32_t stoneFlags = worldFlags | kObjectStoneDetailFlag;
 
     // Continuous dungeon floor base layer (preserved intact for puddle/wetness passes)
     const glm::mat4 floorModel = makeTransform(glm::vec3(totalW * 0.5f, 0.0f, totalH * 0.5f), 0.0f, glm::vec3(totalW, 1.0f, totalH));
@@ -345,14 +346,14 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                 const std::size_t varIdx = static_cast<std::size_t>((x * 73 + y * 137) & 3);
                 const float yaw = static_cast<float>((x * 19 + y * 31) & 3) * 1.5707963f;
                 const glm::vec3 pos = map.cellCenterWorld({x, y}, 0.0f);
-                scene.addObject(wallVariantMeshes[varIdx], kMatStoneWall, makeTransform(pos, yaw, glm::vec3(1.0f)), worldFlags);
+                scene.addObject(wallVariantMeshes[varIdx], kMatStoneWall, makeTransform(pos, yaw, glm::vec3(1.0f)), stoneFlags);
             }
             else if (kind != CellKind::Courtyard)
             {
                 const std::size_t ceilIdx = static_cast<std::size_t>((x * 41 + y * 83) & 1);
                 const float yaw = static_cast<float>((x * 13 + y * 29) & 3) * 1.5707963f;
                 const glm::vec3 roofPos = map.cellCenterWorld({x, y}, wallHeight);
-                scene.addObject(ceilingVariantMeshes[ceilIdx], kMatStoneWall, makeTransform(roofPos, yaw, glm::vec3(1.0f)), worldFlags);
+                scene.addObject(ceilingVariantMeshes[ceilIdx], kMatStoneWall, makeTransform(roofPos, yaw, glm::vec3(1.0f)), stoneFlags);
             }
         }
     }
@@ -425,7 +426,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                 {
                     glm::vec3 cand(0.0f);
                     bool accepted = false;
-                    for (int attempt = 0; attempt < 5 && !accepted; ++attempt)
+                    for (int attempt = 0; attempt < 8 && !accepted; ++attempt)
                     {
                         const float px = glm::mix(cellMin.x, cellMax.x, paverUnit(paverRng));
                         const float pz = glm::mix(cellMin.z, cellMax.z, paverUnit(paverRng));
@@ -459,7 +460,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                     const float yaw = baseYaw + yawJitter(paverRng);
                     const float s = scaleRand(paverRng);
                     const std::uint32_t meshId = paverMeshes[static_cast<std::size_t>(k + x * 3 + y * 5) % paverMeshes.size()];
-                    scene.addObject(meshId, kMatFloor, makeTransform(cand, yaw, glm::vec3(s, 0.85f + 0.35f * paverUnit(paverRng), s)), worldFlags);
+                    scene.addObject(meshId, kMatStoneWall, makeTransform(cand, yaw, glm::vec3(s, 0.85f + 0.35f * paverUnit(paverRng), s)), stoneFlags);
                 }
             }
         }
@@ -542,7 +543,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     {
         const glm::vec3 &p = map.pillars[pIdx];
         const float yaw = static_cast<float>(pIdx & 3) * 1.5707963f;
-        scene.addObject(pillarVariantMeshes[pIdx % pillarVariantMeshes.size()], kMatStoneWall, makeTransform(p, yaw, glm::vec3(1.0f)), worldFlags);
+        scene.addObject(pillarVariantMeshes[pIdx % pillarVariantMeshes.size()], kMatStoneWall, makeTransform(p, yaw, glm::vec3(1.0f)), stoneFlags);
     }
 
     // Overhead segmented stone archways or corbelled beams along straight corridors
@@ -551,7 +552,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         const PropSpawn &beam = map.ceilingBeams[bIdx];
         if (desc.buildCorridorArches)
         {
-            scene.addObject(archMeshes[bIdx % archMeshes.size()], kMatStoneWall, makeTransform(beam.position, beam.yaw, glm::vec3(1.0f)), worldFlags);
+            scene.addObject(archMeshes[bIdx % archMeshes.size()], kMatStoneWall, makeTransform(beam.position, beam.yaw, glm::vec3(1.0f)), stoneFlags);
         }
         else
         {
@@ -572,7 +573,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     // Segmented chipped stone plinths, dado stringcourses & upper architrave trims
     if (desc.buildTempleTrim)
     {
-        buildTempleWallTrim(map, scene, plinthMeshes, dadoMeshes, architraveMeshes, bevelBoxMesh, kMatStoneWall, worldFlags, wallHeight);
+        buildTempleWallTrim(map, scene, plinthMeshes, dadoMeshes, architraveMeshes, bevelBoxMesh, kMatStoneWall, stoneFlags, wallHeight);
     }
 
     MazeSceneHandles handles;

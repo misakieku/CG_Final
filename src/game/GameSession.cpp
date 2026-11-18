@@ -508,7 +508,7 @@ void GameSession::renderHud(int viewportWidth, int viewportHeight, float fps) co
         {
             ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.0f, 1.0f), "[FLY MODE] Collision & pickups paused");
         }
-        ImGui::TextDisabled("WASD Move | Shift Sprint | Space Jump | M Map | F Fly | R New | F5 Shaders | Esc Cursor");
+        ImGui::TextDisabled("WASD Move | Shift Sprint | Space Jump | M Map | F Fly | R New | F5 Shaders | F6 PBR/Clay | Esc Cursor");
     }
     ImGui::End();
 

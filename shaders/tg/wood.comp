@@ -1,0 +1,53 @@
+#version 460 core
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#include "tg/cell.glsl"
+
+layout(rgba8, binding = 0) writeonly uniform image2D uOutAlbedo;
+layout(rgba8, binding = 1) writeonly uniform image2D uOutOrm;
+layout(r16f, binding = 2) writeonly uniform image2D uOutHeight;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texSize = imageSize(uOutAlbedo);
+    if (coord.x >= texSize.x || coord.y >= texSize.y)
+    {
+        return;
+    }
+
+    vec2 uv = (vec2(coord) + 0.5) / vec2(texSize);
+
+    // Anisotropic stylized oak plank grain stretched along local U axis
+    float grainWarp = GradientNoise2D(vec2(uv.x * 4.0, uv.y * 8.0), ivec2(4, 8)) * 0.06;
+    float knot = 1.0 - smoothstep(0.05, 0.24, SmoothVoronoiF1(vec2(uv.x, uv.y), ivec2(2, 6), 0.04));
+    float ringCoord = fract(uv.y * 12.0 + grainWarp + knot * 0.45);
+    float grainWave = 0.5 + 0.5 * sin(ringCoord * 6.2831853);
+    float fineFiber = GradientNoise2D(vec2(uv.x * 8.0, uv.y * 64.0), ivec2(8, 64)) * 0.5 + 0.5;
+    float checkCrack = smoothstep(0.84, 0.97, GradientNoise2D(vec2(uv.x * 4.0, uv.y * 24.0), ivec2(4, 24)) * 0.5 + 0.5);
+    float plankSplit = smoothstep(0.94, 0.995, abs(sin(uv.y * 3.14159265 * 4.0)));
+
+    float height = 0.60
+        + (grainWave - 0.5) * 0.16
+        + (fineFiber - 0.5) * 0.08
+        - checkCrack * 0.22
+        - plankSplit * 0.24
+        + knot * 0.06;
+    height = clamp(height, 0.0, 1.0);
+
+    // Brighter linear stylized oak palette matching wall stone GI balance
+    vec3 darkOakLin = vec3(0.24, 0.16, 0.10);
+    vec3 warmOakLin = vec3(0.46, 0.33, 0.21);
+    vec3 linearAlbedo = mix(darkOakLin, warmOakLin, grainWave * 0.68 + fineFiber * 0.32);
+    linearAlbedo = mix(linearAlbedo, vec3(0.14, 0.09, 0.06), clamp(checkCrack * 0.65 + plankSplit * 0.75 + knot * 0.35, 0.0, 0.80));
+
+    float dampMoss = smoothstep(0.62, 0.90, FbmScalar2D(uv + vec2(0.41, 0.27), 5, 2) * 0.5 + 0.5);
+    linearAlbedo = mix(linearAlbedo, vec3(0.20, 0.28, 0.14), dampMoss * 0.28);
+
+    float ao = clamp((1.0 - checkCrack * 0.38) * (1.0 - plankSplit * 0.45) * (1.0 - knot * 0.18), 0.38, 1.0);
+    float roughness = clamp(0.76 - (grainWave - 0.5) * 0.10 + (checkCrack + dampMoss) * 0.10, 0.58, 0.92);
+
+    imageStore(uOutAlbedo, coord, vec4(linearAlbedo, 1.0));
+    imageStore(uOutOrm, coord, vec4(ao, roughness, 0.0, 1.0));
+    imageStore(uOutHeight, coord, vec4(height, 0.0, 0.0, 1.0));
+}

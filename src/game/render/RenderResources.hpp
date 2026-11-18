@@ -49,6 +49,7 @@ struct RenderContext
     float fogAnisotropy = 0.33f;
     float fogHeightFalloff = 0.22f;
     float fogFar = 56.0f;
+    bool whiteboxMode = false;
 };
 
 /// std140 UBO bound at binding = 0 across culling, G-buffer, light culling, and lighting passes.
@@ -159,7 +160,7 @@ private:
     std::uint32_t m_lightCount = 0;
 
     gl::Texture m_gbuffer0; // RGBA8: Albedo.rgb + AO
-    gl::Texture m_gbuffer1; // RGBA16F: WorldNormal.xyz + Roughness
+    gl::Texture m_gbuffer1; // RGBA16F: OctNormal.xy + MatId + SignedRoughness
     gl::Texture m_depthTex; // DEPTH_COMPONENT32F (Reversed-Z [0, 1])
     gl::Texture m_hdrTex;   // RGBA16F: Lit HDR accumulation
     gl::Texture m_shadowDepthTex; // DEPTH_COMPONENT32F ([0, 1] linear directional shadow map)

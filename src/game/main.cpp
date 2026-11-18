@@ -130,6 +130,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     float smoothedFps = 60.0f;
     float fogDensity = 0.045f;
     float fogAnisotropy = 0.33f;
+    bool whiteboxMode = false;
 
     while (!window.shouldClose())
     {
@@ -154,6 +155,11 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         if (window.wasKeyPressed(GLFW_KEY_F5))
         {
             renderer.reloadShaders();
+        }
+        if (window.wasKeyPressed(GLFW_KEY_F6))
+        {
+            whiteboxMode = !whiteboxMode;
+            std::cout << "[MaterialMode] " << (whiteboxMode ? "Whitebox Clay" : "Textured PBR") << '\n';
         }
         if (window.wasKeyPressed(GLFW_KEY_LEFT_BRACKET))
         {
@@ -216,6 +222,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 .viewportHeight = window.height(),
                 .fogDensity = fogDensity,
                 .fogAnisotropy = fogAnisotropy,
+                .whiteboxMode = whiteboxMode,
             };
             renderer.renderFrame(ctx);
 
