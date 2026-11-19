@@ -436,7 +436,7 @@ private:
             m_meshDirty = true;
         }
 
-        ImGui::TextDisabled("Left-click: add/drag point | Right-click point: delete | r >= 0");
+        ImGui::TextDisabled("Left-click: drag / insert on line / append | Right-click point: delete | r >= 0");
 
         const float exportBlockHeight = 92.0f;
         const ImVec2 canvasAvail = ImGui::GetContentRegionAvail();
@@ -535,11 +535,63 @@ private:
             }
         }
 
+        auto distToSegmentSq = [](ImVec2 p, ImVec2 a, ImVec2 b, ImVec2 &closestOut) noexcept -> float
+        {
+            const float abx = b.x - a.x;
+            const float aby = b.y - a.y;
+            const float lenSq = abx * abx + aby * aby;
+            const float t = (lenSq > 1e-5f) ? std::clamp(((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq, 0.0f, 1.0f) : 0.0f;
+            closestOut = ImVec2(a.x + abx * t, a.y + aby * t);
+            const float dx = p.x - closestOut.x;
+            const float dy = p.y - closestOut.y;
+            return dx * dx + dy * dy;
+        };
+
+        int hoveredSegIdx = -1;
+        ImVec2 insertPreviewScreen{};
+        if (isHovered && hoveredIdx < 0 && m_controlPoints.size() >= 2)
+        {
+            float bestSegDistSq = 10.0f * 10.0f;
+            const std::size_t steps = static_cast<std::size_t>(std::max(1, m_samplesPerSegment));
+            for (std::size_t i = 1; i < m_samples.size(); ++i)
+            {
+                ImVec2 proj{};
+                const float d2 = distToSegmentSq(mousePos, toScreen(m_samples[i - 1].position), toScreen(m_samples[i].position), proj);
+                if (d2 < bestSegDistSq)
+                {
+                    bestSegDistSq = d2;
+                    hoveredSegIdx = static_cast<int>((i - 1) / steps);
+                    insertPreviewScreen = proj;
+                }
+            }
+            for (std::size_t i = 0; i + 1 < m_controlPoints.size(); ++i)
+            {
+                ImVec2 proj{};
+                const float d2 = distToSegmentSq(mousePos, toScreen(m_controlPoints[i]), toScreen(m_controlPoints[i + 1]), proj);
+                if (d2 < bestSegDistSq)
+                {
+                    bestSegDistSq = d2;
+                    hoveredSegIdx = static_cast<int>(i);
+                    insertPreviewScreen = proj;
+                }
+            }
+        }
+
         if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
             if (hoveredIdx >= 0)
             {
                 m_dragIndex = hoveredIdx;
+            }
+            else if (hoveredSegIdx >= 0)
+            {
+                glm::vec2 wp = toWorld(mousePos);
+                wp.x = std::max(0.0f, wp.x);
+                wp.y = std::clamp(wp.y, -1.0f, 1.0f);
+                const int insertPos = std::clamp(hoveredSegIdx + 1, 0, static_cast<int>(m_controlPoints.size()));
+                m_controlPoints.insert(m_controlPoints.begin() + insertPos, wp);
+                m_dragIndex = insertPos;
+                m_meshDirty = true;
             }
             else
             {
@@ -581,12 +633,24 @@ private:
 
         for (std::size_t i = 0; i + 1 < m_controlPoints.size(); ++i)
         {
-            dl->AddLine(toScreen(m_controlPoints[i]), toScreen(m_controlPoints[i + 1]), IM_COL32(110, 120, 145, 160), 1.0f);
+            const bool isSegHovered = (static_cast<int>(i) == hoveredSegIdx && m_dragIndex < 0);
+            const ImU32 lineCol = isSegHovered ? IM_COL32(255, 200, 75, 230) : IM_COL32(110, 120, 145, 160);
+            dl->AddLine(toScreen(m_controlPoints[i]), toScreen(m_controlPoints[i + 1]), lineCol, isSegHovered ? 2.0f : 1.0f);
         }
 
+        const std::size_t steps = static_cast<std::size_t>(std::max(1, m_samplesPerSegment));
         for (std::size_t i = 0; i + 1 < m_samples.size(); ++i)
         {
-            dl->AddLine(toScreen(m_samples[i].position), toScreen(m_samples[i + 1].position), IM_COL32(70, 215, 255, 255), 2.5f);
+            const int segIdx = static_cast<int>(i / steps);
+            const bool isSegHovered = (segIdx == hoveredSegIdx && m_dragIndex < 0);
+            const ImU32 curveCol = isSegHovered ? IM_COL32(255, 220, 95, 255) : IM_COL32(70, 215, 255, 255);
+            dl->AddLine(toScreen(m_samples[i].position), toScreen(m_samples[i + 1].position), curveCol, isSegHovered ? 3.5f : 2.5f);
+        }
+
+        if (hoveredSegIdx >= 0 && m_dragIndex < 0)
+        {
+            dl->AddCircleFilled(insertPreviewScreen, 5.0f, IM_COL32(100, 240, 145, 200));
+            dl->AddCircle(insertPreviewScreen, 5.0f, IM_COL32(20, 25, 35, 255), 0, 1.5f);
         }
 
         for (int i = 0; i < static_cast<int>(m_controlPoints.size()); ++i)
@@ -602,6 +666,10 @@ private:
         {
             const glm::vec2 p = m_controlPoints[static_cast<std::size_t>(hoveredIdx)];
             ImGui::SetTooltip("P%d: r=%.3f, y=%.3f", hoveredIdx, p.x, p.y);
+        }
+        else if (isHovered && hoveredSegIdx >= 0 && m_dragIndex < 0)
+        {
+            ImGui::SetTooltip("Click to insert between P%d & P%d", hoveredSegIdx, hoveredSegIdx + 1);
         }
 
         dl->PopClipRect();

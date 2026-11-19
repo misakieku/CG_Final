@@ -554,6 +554,16 @@ void Shader::setFloat(std::string_view name, float value) const
     glUniform1f(uniformLocation(name), value);
 }
 
+void Shader::setIVec2(std::string_view name, const glm::ivec2 &value) const
+{
+    glUniform2iv(uniformLocation(name), 1, glm::value_ptr(value));
+}
+
+void Shader::setIVec4(std::string_view name, const glm::ivec4 &value) const
+{
+    glUniform4iv(uniformLocation(name), 1, glm::value_ptr(value));
+}
+
 void Shader::setVec2(std::string_view name, const glm::vec2 &value) const
 {
     glUniform2fv(uniformLocation(name), 1, glm::value_ptr(value));
@@ -567,6 +577,14 @@ void Shader::setVec3(std::string_view name, const glm::vec3 &value) const
 void Shader::setVec4(std::string_view name, const glm::vec4 &value) const
 {
     glUniform4fv(uniformLocation(name), 1, glm::value_ptr(value));
+}
+
+void Shader::setVec4Array(std::string_view name, std::span<const glm::vec4> values) const
+{
+    if (!values.empty())
+    {
+        glUniform4fv(uniformLocation(name), static_cast<GLsizei>(values.size()), glm::value_ptr(values[0]));
+    }
 }
 
 void Shader::setMat3(std::string_view name, const glm::mat3 &value) const

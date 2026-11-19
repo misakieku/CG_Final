@@ -1,0 +1,119 @@
+#version 460 core
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D uDepthTex;
+layout(r32f, binding = 0) readonly uniform image2D uSrcMip;
+layout(r32f, binding = 1) writeonly uniform image2D uDstMip0;
+layout(r32f, binding = 2) writeonly uniform image2D uDstMip1;
+layout(r32f, binding = 3) writeonly uniform image2D uDstMip2;
+layout(r32f, binding = 4) writeonly uniform image2D uDstMip3;
+
+uniform int uFirstBatch = 1;
+uniform int uMinDstCount = 4;
+uniform ivec2 uSrcSize = ivec2(1);
+uniform ivec4 uDstSize01 = ivec4(1);
+uniform ivec4 uDstSize23 = ivec4(1);
+
+shared float s_depths[32];
+
+uvec2 coordInTileByIndex(uint i)
+{
+    return uvec2(
+        (i & 1u) | ((i >> 2u) & 6u),
+        ((i >> 1u) & 3u) | ((i >> 3u) & 4u)
+    );
+}
+
+void subgroupMergeDepth(uint threadID, uint bitIndex, inout float depth)
+{
+    uint highIndex = threadID >> (bitIndex + 1u);
+    uint lowIndex = threadID & ((1u << (bitIndex + 1u)) - 1u);
+
+    if (lowIndex == (1u << bitIndex))
+    {
+        s_depths[highIndex] = depth;
+    }
+    barrier();
+
+    if (lowIndex == 0u)
+    {
+        depth = min(depth, s_depths[highIndex]);
+    }
+    barrier();
+}
+
+void main()
+{
+    uint tid = gl_LocalInvocationID.x;
+    ivec2 dstCoord0 = ivec2((gl_WorkGroupID.xy << 3u) | coordInTileByIndex(tid));
+    bool valid0 = dstCoord0.x < uDstSize01.x && dstCoord0.y < uDstSize01.y;
+
+    float depth = 1.0;
+    if (valid0)
+    {
+        if (uFirstBatch != 0)
+        {
+            ivec2 srcMin = ivec2(floor((vec2(dstCoord0) * vec2(uSrcSize)) / vec2(uDstSize01.xy)));
+            ivec2 srcMax = ivec2(ceil((vec2(dstCoord0 + ivec2(1)) * vec2(uSrcSize)) / vec2(uDstSize01.xy))) - ivec2(1);
+            ivec2 maxSrc = max(ivec2(0), uSrcSize - ivec2(1));
+            srcMin = clamp(srcMin, ivec2(0), maxSrc);
+            srcMax = clamp(max(srcMin, srcMax), ivec2(0), maxSrc);
+
+            for (int y = srcMin.y; y <= srcMax.y; ++y)
+            {
+                for (int x = srcMin.x; x <= srcMax.x; ++x)
+                {
+                    depth = min(depth, texelFetch(uDepthTex, ivec2(x, y), 0).r);
+                }
+            }
+        }
+        else
+        {
+            ivec2 readOffset = dstCoord0 << 1;
+            ivec2 maxSrc = max(ivec2(0), uSrcSize - ivec2(1));
+            float d00 = imageLoad(uSrcMip, clamp(readOffset + ivec2(0, 0), ivec2(0), maxSrc)).r;
+            float d10 = imageLoad(uSrcMip, clamp(readOffset + ivec2(1, 0), ivec2(0), maxSrc)).r;
+            float d01 = imageLoad(uSrcMip, clamp(readOffset + ivec2(0, 1), ivec2(0), maxSrc)).r;
+            float d11 = imageLoad(uSrcMip, clamp(readOffset + ivec2(1, 1), ivec2(0), maxSrc)).r;
+            depth = min(min(d00, d10), min(d01, d11));
+        }
+
+        if (uMinDstCount >= 1)
+        {
+            imageStore(uDstMip0, dstCoord0, vec4(depth, 0.0, 0.0, 0.0));
+        }
+    }
+
+    subgroupMergeDepth(tid, 0u, depth);
+    subgroupMergeDepth(tid, 1u, depth);
+    if (uMinDstCount >= 2 && (tid & 0x3u) == 0u)
+    {
+        ivec2 dstCoord1 = dstCoord0 >> 1;
+        if (dstCoord1.x < uDstSize01.z && dstCoord1.y < uDstSize01.w)
+        {
+            imageStore(uDstMip1, dstCoord1, vec4(depth, 0.0, 0.0, 0.0));
+        }
+    }
+
+    subgroupMergeDepth(tid, 2u, depth);
+    subgroupMergeDepth(tid, 3u, depth);
+    if (uMinDstCount >= 3 && (tid & 0xFu) == 0u)
+    {
+        ivec2 dstCoord2 = dstCoord0 >> 2;
+        if (dstCoord2.x < uDstSize23.x && dstCoord2.y < uDstSize23.y)
+        {
+            imageStore(uDstMip2, dstCoord2, vec4(depth, 0.0, 0.0, 0.0));
+        }
+    }
+
+    subgroupMergeDepth(tid, 4u, depth);
+    subgroupMergeDepth(tid, 5u, depth);
+    if (uMinDstCount >= 4 && (tid & 0x3Fu) == 0u)
+    {
+        ivec2 dstCoord3 = dstCoord0 >> 3;
+        if (dstCoord3.x < uDstSize23.z && dstCoord3.y < uDstSize23.w)
+        {
+            imageStore(uDstMip3, dstCoord3, vec4(depth, 0.0, 0.0, 0.0));
+        }
+    }
+}

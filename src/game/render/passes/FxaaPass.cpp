@@ -20,8 +20,25 @@ void FxaaPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void FxaaPass::execute(const RenderContext &ctx, RenderResources &res)
 {
+    const int outW = (ctx.presentWidth > 0) ? ctx.presentWidth : ctx.viewportWidth;
+    const int outH = (ctx.presentHeight > 0) ? ctx.presentHeight : ctx.viewportHeight;
+
+    if (!ctx.features.enableFxaa)
+    {
+        const GLenum filter = (outW == ctx.viewportWidth && outH == ctx.viewportHeight) ? GL_NEAREST : GL_LINEAR;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, res.ldrFbo().id());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(
+            0, 0, ctx.viewportWidth, ctx.viewportHeight,
+            0, 0, outW, outH,
+            GL_COLOR_BUFFER_BIT,
+            filter);
+        gl::Framebuffer::bindDefault();
+        return;
+    }
+
     gl::Framebuffer::bindDefault();
-    glViewport(0, 0, ctx.viewportWidth, ctx.viewportHeight);
+    glViewport(0, 0, outW, outH);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glDisable(GL_BLEND);

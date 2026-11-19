@@ -14,6 +14,8 @@ struct DrawObjectData
 struct MeshSpan
 {
     vec4 boundingSphere;
+    vec4 aabbMin;
+    vec4 aabbMax;
     uint indexCount;
     uint firstIndex;
     int  baseVertex;
@@ -34,3 +36,4 @@ const uint kObjectWorldUVFlag = 2u;
 const uint kObjectWindSwayFlag = 4u;
 const uint kObjectWaterFlag = 8u;
 const uint kObjectStoneDetailFlag = 16u;
+const uint kObjectNoPointShadowFlag = 32u;

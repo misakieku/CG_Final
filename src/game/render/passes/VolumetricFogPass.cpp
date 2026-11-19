@@ -18,7 +18,10 @@ void VolumetricFogPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void VolumetricFogPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    (void)ctx;
+    if (!ctx.features.enableFog)
+    {
+        return;
+    }
     const int writeIdx = res.fogWriteIndex();
     const int prevIdx = 1 - writeIdx;
 
@@ -33,10 +36,10 @@ void VolumetricFogPass::execute(const RenderContext &ctx, RenderResources &res)
     res.clusterCountsSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 5);
     res.clusterIndicesSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 6);
     glBindTextureUnit(0, res.fogVolumeTexId(prevIdx));
-    glBindTextureUnit(1, res.shadowDepthTex().id());
-    glBindTextureUnit(2, res.giShTexId(0));
-    glBindTextureUnit(3, res.giShTexId(1));
-    glBindTextureUnit(4, res.giShTexId(2));
+    glBindTextureUnit(1, res.sampledShadowDepthTexId(ctx.features.enableShadows));
+    glBindTextureUnit(2, res.sampledGiShTexId(0, ctx.features.enableGi));
+    glBindTextureUnit(3, res.sampledGiShTexId(1, ctx.features.enableGi));
+    glBindTextureUnit(4, res.sampledGiShTexId(2, ctx.features.enableGi));
     glBindTextureUnit(5, res.mazeGridTexId());
     glBindImageTexture(0, res.fogVolumeTexId(writeIdx), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
     glDispatchCompute(gx, gy, kFogVolumeDepth);

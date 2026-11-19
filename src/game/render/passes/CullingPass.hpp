@@ -6,18 +6,25 @@
 namespace game::render
 {
 
-/// Compute pass performing frustum culling and bucketed MultiDrawIndirect compaction.
+enum class CullingStage
+{
+    Shadow,
+    MainPass1,
+    MainPass2,
+};
+
+/// Compute pass performing frustum, screen-percentage, and two-pass HZB occlusion culling.
 class CullingPass final : public IRenderPass
 {
 public:
-    explicit CullingPass(const std::filesystem::path &shaderDir, bool cullShadow = false);
+    explicit CullingPass(const std::filesystem::path &shaderDir, CullingStage stage = CullingStage::MainPass1);
     void reloadShaders(const std::filesystem::path &shaderDir) override;
     void execute(const RenderContext &ctx, RenderResources &res) override;
 
 private:
     gl::Shader m_cullShader;
     gl::Shader m_grassCullShader;
-    bool m_cullShadow = false;
+    CullingStage m_stage = CullingStage::MainPass1;
 };
 
 } // namespace game::render

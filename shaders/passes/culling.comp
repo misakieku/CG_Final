@@ -3,10 +3,16 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 #include "common/frame_ubo.glsl"
 #include "common/scene_types.glsl"
+#include "common/hzb_common.glsl"
 
 layout(std430, binding = 0) readonly buffer ObjectsBuffer
 {
     DrawObjectData Objects[];
+};
+
+layout(std430, binding = 1) readonly buffer MeshSpansBuffer
+{
+    MeshSpan Meshes[];
 };
 
 layout(std430, binding = 2) buffer IndirectCmdBuffer
@@ -19,19 +25,84 @@ layout(std430, binding = 3) writeonly buffer VisibleIndicesBuffer
     uint VisibleIndices[];
 };
 
-uniform int uCullShadow = 0;
+layout(std430, binding = 4) buffer CullStateBuffer
+{
+    uint CullStates[];
+};
 
-bool isSphereInFrustum(vec4 sphere)
+layout(std430, binding = 5) buffer RescueCmdBuffer
+{
+    DrawElementsIndirectCommand RescueCmds[];
+};
+
+layout(std430, binding = 6) writeonly buffer RescueVisibleIndicesBuffer
+{
+    uint RescueVisibleIndices[];
+};
+
+layout(binding = 0) uniform sampler2D uHzbTex;
+
+// 0 = shadow frustum cull, 1 = main Pass 1 (prev HZB), 2 = main Pass 2 (curr HZB rescue), 3 = point shadow face cull
+uniform int uCullMode = 0;
+uniform vec4 uPointShadowPlanes[6];
+uniform vec4 uPointShadowSphere = vec4(0.0);
+
+bool isSphereInFrustum(vec4 sphere, bool shadow)
 {
     for (int i = 0; i < 6; ++i)
     {
-        vec4 plane = (uCullShadow != 0) ? uShadowFrustumPlanes[i] : uFrustumPlanes[i];
+        vec4 plane = shadow ? uShadowFrustumPlanes[i] : uFrustumPlanes[i];
         if (dot(plane.xyz, sphere.xyz) + plane.w < -sphere.w)
         {
             return false;
         }
     }
     return true;
+}
+
+bool isSphereInPointShadowFrustum(vec4 sphere)
+{
+    vec3 delta = sphere.xyz - uPointShadowSphere.xyz;
+    float maxRange = sphere.w + uPointShadowSphere.w;
+    if (dot(delta, delta) > maxRange * maxRange)
+    {
+        return false;
+    }
+    for (int i = 0; i < 6; ++i)
+    {
+        vec4 plane = uPointShadowPlanes[i];
+        if (dot(plane.xyz, sphere.xyz) + plane.w < -sphere.w)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void emitMainObject(uint objId, uint meshId)
+{
+    uint localSlot = atomicAdd(Cmds[meshId].instanceCount, 1u);
+    uint globalSlot = Cmds[meshId].baseInstance + localSlot;
+    VisibleIndices[globalSlot] = objId;
+}
+
+void emitRescueObject(uint objId, uint meshId)
+{
+    uint localSlot = atomicAdd(RescueCmds[meshId].instanceCount, 1u);
+    uint globalSlot = RescueCmds[meshId].baseInstance + localSlot;
+    RescueVisibleIndices[globalSlot] = objId;
+}
+
+void getLocalObjectBounds(DrawObjectData obj, out vec3 localMin, out vec3 localMax)
+{
+    MeshSpan span = Meshes[obj.meshId];
+    localMin = span.aabbMin.xyz;
+    localMax = span.aabbMax.xyz;
+    if ((obj.flags & kObjectWindSwayFlag) != 0u)
+    {
+        localMin -= vec3(0.08);
+        localMax += vec3(0.08);
+    }
 }
 
 void main()
@@ -43,33 +114,91 @@ void main()
     }
 
     DrawObjectData obj = Objects[objId];
-    if ((obj.flags & kObjectVisibleFlag) == 0u || (obj.flags & kObjectWaterFlag) != 0u || !isSphereInFrustum(obj.worldSphere))
-    {
-        return;
-    }
 
-    if (uCullShadow != 0)
+    if (uCullMode == 0)
     {
+        if ((obj.flags & kObjectVisibleFlag) == 0u || (obj.flags & kObjectWaterFlag) != 0u || !isSphereInFrustum(obj.worldSphere, true))
+        {
+            return;
+        }
         float orthoPct = obj.worldSphere.w / max(uShadowParams.y, 1.0);
         if (orthoPct < 0.010)
         {
             return;
         }
+        emitMainObject(objId, obj.meshId);
+        return;
     }
-    else
+
+    if (uCullMode == 3)
     {
+        if ((obj.flags & kObjectVisibleFlag) == 0u || (obj.flags & kObjectWaterFlag) != 0u ||
+            (obj.flags & kObjectNoPointShadowFlag) != 0u || !isSphereInPointShadowFrustum(obj.worldSphere))
+        {
+            return;
+        }
+        float dist = length(obj.worldSphere.xyz - uPointShadowSphere.xyz);
+        if (dist > obj.worldSphere.w && (obj.worldSphere.w / max(dist, 0.01)) < 0.014)
+        {
+            return;
+        }
+        emitMainObject(objId, obj.meshId);
+        return;
+    }
+
+    if (uCullMode == 1)
+    {
+        if ((obj.flags & kObjectVisibleFlag) == 0u || (obj.flags & kObjectWaterFlag) != 0u || !isSphereInFrustum(obj.worldSphere, false))
+        {
+            CullStates[objId] = 0u;
+            return;
+        }
         float dist = length(obj.worldSphere.xyz - uCameraPos.xyz);
         if (dist > obj.worldSphere.w)
         {
             float screenHeightPct = (obj.worldSphere.w * abs(uProj[1][1])) / max(dist, 0.01);
             if (screenHeightPct < 0.018)
             {
+                CullStates[objId] = 0u;
                 return;
             }
         }
+
+        if (uHzbParams.w != 0u && uHzbParams.x > 0u && uHzbParams.y > 0u)
+        {
+            vec3 localMin;
+            vec3 localMax;
+            getLocalObjectBounds(obj, localMin, localMax);
+            if (isAabbOccludedByHzb(localMin, localMax, obj.model, uPrevViewProj, uHzbTex, uHzbParams.xyz))
+            {
+                CullStates[objId] = 2u;
+                return;
+            }
+        }
+
+        CullStates[objId] = 1u;
+        emitMainObject(objId, obj.meshId);
+        return;
     }
 
-    uint localSlot = atomicAdd(Cmds[obj.meshId].instanceCount, 1u);
-    uint globalSlot = Cmds[obj.meshId].baseInstance + localSlot;
-    VisibleIndices[globalSlot] = objId;
+    // Pass 2: rescue candidates occluded in Pass 1 that are actually visible in the current frame
+    if (CullStates[objId] != 2u)
+    {
+        return;
+    }
+
+    if (uHzbParams.x > 0u && uHzbParams.y > 0u)
+    {
+        vec3 localMin;
+        vec3 localMax;
+        getLocalObjectBounds(obj, localMin, localMax);
+        if (isAabbOccludedByHzb(localMin, localMax, obj.model, uViewProj, uHzbTex, uHzbParams.xyz))
+        {
+            return;
+        }
+    }
+
+    CullStates[objId] = 1u;
+    emitMainObject(objId, obj.meshId);
+    emitRescueObject(objId, obj.meshId);
 }

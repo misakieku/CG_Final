@@ -108,6 +108,10 @@ struct MazeGenDesc
     int minCourtyards = -1;
     int maxCourtyards = -1;
     float braidRatio = 0.38f;
+    float corridorNewestBias = 0.72f;
+    float corridorStraightBias = 0.58f;
+    int maxUnbranchedSteps = 3;
+    int extraLoopCount = 2;
 
     // Treasures
     int maxTreasures = 5;

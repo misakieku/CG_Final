@@ -4,6 +4,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "common/frame_ubo.glsl"
 #include "common/scene_types.glsl"
 #include "common/grass_common.glsl"
+#include "common/hzb_common.glsl"
 
 layout(std430, binding = 0) readonly buffer GrassInstancesBuffer
 {
@@ -19,6 +20,8 @@ layout(std430, binding = 2) writeonly buffer VisibleGrassIndicesBuffer
 {
     uint VisibleGrassIndices[];
 };
+
+layout(binding = 0) uniform sampler2D uHzbTex;
 
 uniform int uGrassCount = 0;
 
@@ -44,6 +47,17 @@ void main()
     {
         vec4 plane = uFrustumPlanes[i];
         if (dot(plane.xyz, center) + plane.w < -radius)
+        {
+            return;
+        }
+    }
+
+    if (uHzbParams.x > 0u && uHzbParams.y > 0u)
+    {
+        float pad = radius + 0.09;
+        vec3 boxMin = center - vec3(pad);
+        vec3 boxMax = center + vec3(pad);
+        if (isAabbOccludedByHzb(boxMin, boxMax, mat4(1.0), uViewProj, uHzbTex, uHzbParams.xyz))
         {
             return;
         }

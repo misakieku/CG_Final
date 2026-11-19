@@ -18,7 +18,10 @@ void ShadowPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void ShadowPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    (void)ctx;
+    if (!ctx.features.enableShadows)
+    {
+        return;
+    }
     res.shadowFbo().bind();
     glViewport(0, 0, RenderResources::kShadowMapSize, RenderResources::kShadowMapSize);
 

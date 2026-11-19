@@ -20,6 +20,7 @@ private:
     gl::Shader m_compactShader;
     gl::Shader m_traceShader;
     gl::Shader m_blendShader;
+    gl::Shader m_screenShader;
 };
 
 } // namespace game::render

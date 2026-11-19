@@ -7,6 +7,7 @@
 #include "game/render/MegaScene.hpp"
 #include "game/render/RenderResources.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -24,6 +25,8 @@ struct MazeSceneHandles
     std::uint32_t exitLightIndex = 0;
     std::vector<glm::vec3> bushPositions;
     std::vector<render::GpuPointLight> pointLights;
+    std::vector<render::FlameInstance> flames;
+    std::size_t torchLightCount = 0;
 };
 
 struct MazeSceneDesc
@@ -80,6 +83,19 @@ struct MazeSceneDesc
     FoliageGenDesc foliage{};
     VineGenDesc vines{};
 };
+
+/// CPU-only maze + mesh + grass build product safe to construct on a worker thread before GPU upload.
+struct BuiltMazeSceneCpu
+{
+    MazeMapData map{};
+    MazeSceneHandles handles{};
+    render::MegaScene scene{};
+    std::vector<render::GrassInstance> grassInstances;
+    float wallHeight = 3.5f;
+};
+
+/// Generates a maze and builds all CPU scene meshes, foliage, and grass instances without calling OpenGL.
+[[nodiscard]] BuiltMazeSceneCpu buildMazeSceneCpu(const MazeGenDesc &mapDesc, const MazeSceneDesc &sceneDesc, const std::filesystem::path &exeDir, std::atomic<int> *stageOut = nullptr);
 
 /// Populates MegaScene (and optional GPU GrassField) from MazeMapData and collects point lights.
 [[nodiscard]] MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc = {}, render::GrassField *grassOut = nullptr);

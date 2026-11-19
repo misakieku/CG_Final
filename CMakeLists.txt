@@ -148,14 +148,19 @@ add_executable(MazeGame
     src/game/render/passes/DepthPrePass.cpp
     src/game/render/passes/GBufferPass.cpp
     src/game/render/passes/GIPass.cpp
+    src/game/render/passes/HzbPass.cpp
     src/game/render/passes/LightCullingPass.cpp
+    src/game/render/passes/PointShadowPass.cpp
+    src/game/render/passes/ProbeDebugPass.cpp
     src/game/render/passes/CompositePass.cpp
+    src/game/render/passes/FlamePass.cpp
     src/game/render/passes/PuddlePass.cpp
     src/game/render/passes/SSAOPass.cpp
     src/game/render/passes/SSPRPass.cpp
     src/game/render/passes/ShadowPass.cpp
     src/game/render/passes/VolumetricFogPass.cpp
     src/game/render/passes/WaterPass.cpp
+    src/game/render/passes/BloomPass.cpp
     src/game/render/passes/PostProcessPass.cpp
     src/game/render/passes/FxaaPass.cpp
 )

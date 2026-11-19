@@ -18,6 +18,10 @@ void PuddlePass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void PuddlePass::execute(const RenderContext &ctx, RenderResources &res)
 {
+    if (!ctx.features.enablePuddles)
+    {
+        return;
+    }
     res.puddleFbo().bind();
     glViewport(0, 0, ctx.viewportWidth, ctx.viewportHeight);
     glDisable(GL_DEPTH_TEST);

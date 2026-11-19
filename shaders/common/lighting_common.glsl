@@ -6,7 +6,7 @@ struct GpuPointLight
     vec4 colorIntensity; // rgb = linear color, w = intensity
 };
 
-const vec3 kMoonDir = normalize(vec3(0.45, 0.85, 0.35));
+#define kMoonDir (uMoonDir.xyz)
 const vec3 kMoonColor = vec3(0.32, 0.44, 0.78);
 
 uint computeClusterId(vec2 screenUV, vec3 worldPos)

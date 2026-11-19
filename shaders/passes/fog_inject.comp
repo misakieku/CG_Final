@@ -35,7 +35,7 @@ float sampleFogMoonShadow(vec3 worldPos)
 {
     if (uShadowParams.z < 0.5)
     {
-        return 0.0;
+        return 1.0;
     }
     vec4 sc = uLightViewProj * vec4(worldPos, 1.0);
     sc.xyz /= sc.w;
@@ -139,7 +139,7 @@ void main()
 
         // Reuse the 3D GI probe field for indirect colored ambient mist in corridors
         vec3 giAmbient = vec3(0.018, 0.024, 0.038);
-        if (uGiDims.w > 0u)
+        if (uGiDims.w > 0u && (uFogDims.w & kFeatureGiBit) != 0u)
         {
             vec3 gridCoord = (worldPos - uGiGridOrigin.xyz) * uGiGridInvStep.xyz;
             vec3 giUVW = clamp((gridCoord + 0.5) / vec3(uGiDims.xyz), vec3(0.0), vec3(1.0));

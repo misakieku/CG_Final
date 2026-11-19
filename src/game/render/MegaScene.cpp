@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <map>
@@ -17,11 +18,18 @@ namespace game::render
 namespace
 {
 
-[[nodiscard]] glm::vec4 computeLocalBoundingSphere(std::span<const SceneVertex> vertices)
+struct LocalBounds
+{
+    glm::vec4 sphere{0.0f};
+    glm::vec4 aabbMin{0.0f};
+    glm::vec4 aabbMax{0.0f};
+};
+
+[[nodiscard]] LocalBounds computeLocalBoundingBounds(std::span<const SceneVertex> vertices)
 {
     if (vertices.empty())
     {
-        return glm::vec4(0.0f);
+        return {};
     }
     glm::vec3 minP = vertices[0].position;
     glm::vec3 maxP = vertices[0].position;
@@ -37,7 +45,11 @@ namespace
         const glm::vec3 d = v.position - center;
         maxDistSq = std::max(maxDistSq, glm::dot(d, d));
     }
-    return glm::vec4(center, std::sqrt(maxDistSq));
+    return LocalBounds{
+        .sphere = glm::vec4(center, std::sqrt(maxDistSq)),
+        .aabbMin = glm::vec4(minP, 1.0f),
+        .aabbMax = glm::vec4(maxP, 1.0f),
+    };
 }
 
 [[nodiscard]] glm::vec4 transformBoundingSphere(const glm::vec4 &localSphere, const glm::mat4 &model)
@@ -65,13 +77,17 @@ MegaScene::MegaScene(MegaScene &&other) noexcept
       m_objects(std::move(other.m_objects)),
       m_waterObjectIds(std::move(other.m_waterObjectIds)),
       m_vao(std::exchange(other.m_vao, 0)),
+      m_generation(std::exchange(other.m_generation, 0)),
       m_vbo(std::move(other.m_vbo)),
       m_ibo(std::move(other.m_ibo)),
       m_meshSpansSSBO(std::move(other.m_meshSpansSSBO)),
       m_objectsSSBO(std::move(other.m_objectsSSBO)),
       m_cmdTemplateSSBO(std::move(other.m_cmdTemplateSSBO)),
       m_workingCmdsSSBO(std::move(other.m_workingCmdsSSBO)),
-      m_visibleIndicesSSBO(std::move(other.m_visibleIndicesSSBO))
+      m_visibleIndicesSSBO(std::move(other.m_visibleIndicesSSBO)),
+      m_objectCullStateSSBO(std::move(other.m_objectCullStateSSBO)),
+      m_rescueCmdsSSBO(std::move(other.m_rescueCmdsSSBO)),
+      m_rescueVisibleIndicesSSBO(std::move(other.m_rescueVisibleIndicesSSBO))
 {
 }
 
@@ -87,6 +103,7 @@ MegaScene &MegaScene::operator=(MegaScene &&other) noexcept
         m_objects = std::move(other.m_objects);
         m_waterObjectIds = std::move(other.m_waterObjectIds);
         m_vao = std::exchange(other.m_vao, 0);
+        m_generation = std::exchange(other.m_generation, 0);
         m_vbo = std::move(other.m_vbo);
         m_ibo = std::move(other.m_ibo);
         m_meshSpansSSBO = std::move(other.m_meshSpansSSBO);
@@ -94,6 +111,9 @@ MegaScene &MegaScene::operator=(MegaScene &&other) noexcept
         m_cmdTemplateSSBO = std::move(other.m_cmdTemplateSSBO);
         m_workingCmdsSSBO = std::move(other.m_workingCmdsSSBO);
         m_visibleIndicesSSBO = std::move(other.m_visibleIndicesSSBO);
+        m_objectCullStateSSBO = std::move(other.m_objectCullStateSSBO);
+        m_rescueCmdsSSBO = std::move(other.m_rescueCmdsSSBO);
+        m_rescueVisibleIndicesSSBO = std::move(other.m_rescueVisibleIndicesSSBO);
     }
     return *this;
 }
@@ -101,9 +121,12 @@ MegaScene &MegaScene::operator=(MegaScene &&other) noexcept
 std::uint32_t MegaScene::registerMesh(std::span<const SceneVertex> vertices, std::span<const std::uint32_t> indices)
 {
     const std::uint32_t meshId = static_cast<std::uint32_t>(m_meshes.size());
+    const LocalBounds bounds = computeLocalBoundingBounds(vertices);
 
     MeshSpan span;
-    span.boundingSphere = computeLocalBoundingSphere(vertices);
+    span.boundingSphere = bounds.sphere;
+    span.aabbMin = bounds.aabbMin;
+    span.aabbMax = bounds.aabbMax;
     span.indexCount = static_cast<std::uint32_t>(indices.size());
     span.firstIndex = static_cast<std::uint32_t>(m_cpuIndices.size());
     span.baseVertex = static_cast<std::int32_t>(m_cpuVertices.size());
@@ -216,6 +239,13 @@ void MegaScene::buildGpuBuffers()
     m_cmdTemplateSSBO = GpuBuffer::createImmutableFromSpan<DrawElementsIndirectCommand>(cmdTemplates);
     m_workingCmdsSSBO = GpuBuffer::createImmutable(cmdTemplates.size() * sizeof(DrawElementsIndirectCommand));
     m_visibleIndicesSSBO = GpuBuffer::createImmutable(std::max<std::uint32_t>(1, runningOffset) * sizeof(std::uint32_t));
+    m_objectCullStateSSBO = GpuBuffer::createImmutable(std::max<std::size_t>(1, m_objects.size()) * sizeof(std::uint32_t));
+    m_objectCullStateSSBO.clearUint32(0u);
+    m_rescueCmdsSSBO = GpuBuffer::createImmutable(cmdTemplates.size() * sizeof(DrawElementsIndirectCommand));
+    m_rescueVisibleIndicesSSBO = GpuBuffer::createImmutable(std::max<std::uint32_t>(1, runningOffset) * sizeof(std::uint32_t));
+
+    static std::atomic<std::uint64_t> s_nextGeneration{1u};
+    m_generation = s_nextGeneration.fetch_add(1u, std::memory_order_relaxed);
 
     // CPU geometry buffers are redundant once uploaded to GPU MegaVBO / MegaIBO
     std::vector<SceneVertex>{}.swap(m_cpuVertices);
@@ -268,6 +298,11 @@ void MegaScene::resetIndirectCommands() const
     m_workingCmdsSSBO.copyFrom(m_cmdTemplateSSBO, 0, 0, m_cmdTemplateSSBO.sizeBytes());
 }
 
+void MegaScene::resetRescueIndirectCommands() const
+{
+    m_rescueCmdsSSBO.copyFrom(m_cmdTemplateSSBO, 0, 0, m_cmdTemplateSSBO.sizeBytes());
+}
+
 void MegaScene::bindMegaVao() const noexcept
 {
     glBindVertexArray(m_vao);
@@ -281,9 +316,25 @@ void MegaScene::bindSceneBuffers(GLuint objectsSlot, GLuint meshesSlot, GLuint c
     m_visibleIndicesSSBO.bindBase(GL_SHADER_STORAGE_BUFFER, visibleIndicesSlot);
 }
 
+void MegaScene::bindCullStateBuffer(GLuint slot) const noexcept
+{
+    m_objectCullStateSSBO.bindBase(GL_SHADER_STORAGE_BUFFER, slot);
+}
+
+void MegaScene::bindRescueBuffers(GLuint cmdsSlot, GLuint visibleIndicesSlot) const noexcept
+{
+    m_rescueCmdsSSBO.bindBase(GL_SHADER_STORAGE_BUFFER, cmdsSlot);
+    m_rescueVisibleIndicesSSBO.bindBase(GL_SHADER_STORAGE_BUFFER, visibleIndicesSlot);
+}
+
 void MegaScene::bindDrawIndirectBuffer() const noexcept
 {
     m_workingCmdsSSBO.bind(GL_DRAW_INDIRECT_BUFFER);
+}
+
+void MegaScene::bindRescueDrawIndirectBuffer() const noexcept
+{
+    m_rescueCmdsSSBO.bind(GL_DRAW_INDIRECT_BUFFER);
 }
 
 void MegaScene::destroyVao() noexcept

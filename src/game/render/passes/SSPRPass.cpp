@@ -24,7 +24,7 @@ void SSPRPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void SSPRPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    if (ctx.whiteboxMode || ctx.viewportWidth <= 0 || ctx.viewportHeight <= 0)
+    if (!ctx.features.enableSspr || ctx.whiteboxMode || ctx.viewportWidth <= 0 || ctx.viewportHeight <= 0)
     {
         return;
     }
@@ -64,9 +64,9 @@ void SSPRPass::execute(const RenderContext &ctx, RenderResources &res)
     glBindTextureUnit(2, res.depthTex().id());
     if (res.hasGiGrid())
     {
-        glBindTextureUnit(3, res.giShTexId(0));
-        glBindTextureUnit(4, res.giShTexId(1));
-        glBindTextureUnit(5, res.giShTexId(2));
+        glBindTextureUnit(3, res.sampledGiShTexId(0, ctx.features.enableGi));
+        glBindTextureUnit(4, res.sampledGiShTexId(1, ctx.features.enableGi));
+        glBindTextureUnit(5, res.sampledGiShTexId(2, ctx.features.enableGi));
         glBindTextureUnit(6, res.mazeGridTexId());
     }
     glDispatchCompute(groupsX, groupsY, 1);

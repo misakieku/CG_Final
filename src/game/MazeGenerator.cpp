@@ -5,7 +5,6 @@
 #include <cmath>
 #include <queue>
 #include <random>
-#include <stack>
 
 namespace game
 {
@@ -97,12 +96,18 @@ void fillCourtyard(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng, std::
     }
 }
 
-void fillCorridor(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng)
+void fillCorridor(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng, const MazeGenDesc &desc)
 {
     data.setCell(start, CellKind::Corridor);
 
-    std::stack<glm::ivec2> paths;
-    paths.push(start);
+    struct ActiveNode
+    {
+        glm::ivec2 cell{0};
+        glm::ivec2 lastDir{0};
+    };
+
+    std::vector<ActiveNode> active;
+    active.push_back({start, glm::ivec2(0)});
 
     std::array<glm::ivec2, 4> dirs = {
         glm::ivec2(-2, 0),
@@ -111,21 +116,54 @@ void fillCorridor(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng)
         glm::ivec2(0, -2),
     };
 
-    while (!paths.empty())
+    std::uniform_real_distribution<float> unitRand(0.0f, 1.0f);
+    const float newestBias = std::clamp(desc.corridorNewestBias, 0.0f, 1.0f);
+    const float straightBias = std::clamp(desc.corridorStraightBias, 0.0f, 1.0f);
+    const int maxRunBeforeBranch = std::max(1, desc.maxUnbranchedSteps);
+
+    int stepsSinceBranch = 0;
+    int totalCarved = 0;
+
+    while (!active.empty())
     {
-        const glm::ivec2 point = paths.top();
+        std::size_t pickIdx = active.size() - 1u;
+        const int branchCap = (totalCarved < 10) ? std::min(2, maxRunBeforeBranch) : maxRunBeforeBranch;
+        const bool forceBranch = (active.size() > 1u && stepsSinceBranch >= branchCap);
+
+        if (forceBranch || (active.size() > 1u && unitRand(eng) > newestBias))
+        {
+            pickIdx = std::uniform_int_distribution<std::size_t>(0u, active.size() - 2u)(eng);
+            stepsSinceBranch = 0;
+        }
+
+        const ActiveNode current = active[pickIdx];
         std::shuffle(dirs.begin(), dirs.end(), eng);
+
+        // Prefer continuing in the same direction to avoid 1-cell zig-zag corridors
+        if (current.lastDir != glm::ivec2(0) && unitRand(eng) < straightBias)
+        {
+            for (std::size_t i = 1; i < dirs.size(); ++i)
+            {
+                if (dirs[i] == current.lastDir)
+                {
+                    std::swap(dirs[0], dirs[i]);
+                    break;
+                }
+            }
+        }
 
         bool carved = false;
         for (const glm::ivec2 dir : dirs)
         {
-            const glm::ivec2 target = point + dir;
+            const glm::ivec2 target = current.cell + dir;
             if (target.x > 0 && target.y > 0 && target.x < data.size.x - 1 && target.y < data.size.y - 1 &&
                 data.getCell(target) == CellKind::Wall)
             {
-                data.setCell(point + dir / 2, CellKind::Corridor);
+                data.setCell(current.cell + dir / 2, CellKind::Corridor);
                 data.setCell(target, CellKind::Corridor);
-                paths.push(target);
+                active.push_back({target, dir});
+                ++stepsSinceBranch;
+                ++totalCarved;
                 carved = true;
                 break;
             }
@@ -133,7 +171,8 @@ void fillCorridor(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng)
 
         if (!carved)
         {
-            paths.pop();
+            active.erase(active.begin() + static_cast<std::ptrdiff_t>(pickIdx));
+            stepsSinceBranch = 0;
         }
     }
 }
@@ -413,6 +452,111 @@ void braidSpareDeadEnds(MazeMapData &data, std::mt19937 &eng, float braidRatio =
     });
 }
 
+void addLongLoopShortcuts(MazeMapData &data, glm::ivec2 start, std::mt19937 &eng, int extraLoops)
+{
+    if (extraLoops <= 0)
+    {
+        return;
+    }
+
+    auto isProtected = [&](glm::ivec2 cell) noexcept -> bool
+    {
+        if (cell == data.startCell || cell == data.exitCell)
+        {
+            return true;
+        }
+        for (const glm::vec3 &tp : data.treasurePositions)
+        {
+            if (data.worldToCell(tp) == cell)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto countWalkableNeighbors = [&](glm::ivec2 cell) noexcept -> int
+    {
+        int count = 0;
+        for (const glm::ivec2 d : kCardinalDirs)
+        {
+            if (data.isWalkable(cell + d))
+            {
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    struct ShortcutCandidate
+    {
+        glm::ivec2 wall{0};
+        glm::ivec2 a{0};
+        glm::ivec2 b{0};
+    };
+
+    std::vector<ShortcutCandidate> candidates;
+    for (int y = 2; y < data.size.y - 2; ++y)
+    {
+        for (int x = 2; x < data.size.x - 2; ++x)
+        {
+            const glm::ivec2 wall{x, y};
+            if (data.getCell(wall) != CellKind::Wall)
+            {
+                continue;
+            }
+
+            // Only break walls separating two opposite non-dead-end corridors with perpendicular walls intact
+            if ((x & 1) == 0 && (y & 1) == 1)
+            {
+                const glm::ivec2 a{x - 1, y};
+                const glm::ivec2 b{x + 1, y};
+                if (data.getCell(a) == CellKind::Corridor && data.getCell(b) == CellKind::Corridor &&
+                    !isProtected(a) && !isProtected(b) &&
+                    countWalkableNeighbors(a) >= 2 && countWalkableNeighbors(b) >= 2 &&
+                    data.getCell({x, y - 1}) == CellKind::Wall && data.getCell({x, y + 1}) == CellKind::Wall)
+                {
+                    candidates.push_back({wall, a, b});
+                }
+            }
+            else if ((x & 1) == 1 && (y & 1) == 0)
+            {
+                const glm::ivec2 a{x, y - 1};
+                const glm::ivec2 b{x, y + 1};
+                if (data.getCell(a) == CellKind::Corridor && data.getCell(b) == CellKind::Corridor &&
+                    !isProtected(a) && !isProtected(b) &&
+                    countWalkableNeighbors(a) >= 2 && countWalkableNeighbors(b) >= 2 &&
+                    data.getCell({x - 1, y}) == CellKind::Wall && data.getCell({x + 1, y}) == CellKind::Wall)
+                {
+                    candidates.push_back({wall, a, b});
+                }
+            }
+        }
+    }
+
+    const std::vector<int> distFromStart = computeBfsDistances(data, start);
+    std::shuffle(candidates.begin(), candidates.end(), eng);
+    int opened = 0;
+    for (const ShortcutCandidate &cand : candidates)
+    {
+        if (opened >= extraLoops)
+        {
+            break;
+        }
+        const std::vector<int> distFromA = computeBfsDistances(data, cand.a);
+        const int sep = distFromA[static_cast<std::size_t>(data.getCellIndex(cand.b.x, cand.b.y))];
+        const int startSep = std::min(
+            distFromStart[static_cast<std::size_t>(data.getCellIndex(cand.a.x, cand.a.y))],
+            distFromStart[static_cast<std::size_t>(data.getCellIndex(cand.b.x, cand.b.y))]);
+
+        if (sep >= 10 && startSep >= 1)
+        {
+            data.setCell(cand.wall, CellKind::Corridor);
+            ++opened;
+        }
+    }
+}
+
 void populatePillarsAndBeams(MazeMapData &data, const MazeGenDesc &desc)
 {
     // Corner pillars at grid vertices shared by 1 wall (outer corner) or 3 walls (inner corner)
@@ -628,6 +772,72 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
         return false;
     };
 
+    struct ArchFootprint
+    {
+        glm::vec2 centerXZ{0.0f};
+        glm::vec2 forwardXZ{0.0f, 1.0f};
+    };
+
+    std::vector<ArchFootprint> archFootprints;
+    archFootprints.reserve(data.ceilingBeams.size() + 16u);
+    for (const PropSpawn &beam : data.ceilingBeams)
+    {
+        archFootprints.push_back({
+            .centerXZ = glm::vec2(beam.position.x, beam.position.z),
+            .forwardXZ = glm::vec2(std::sin(beam.yaw), std::cos(beam.yaw)),
+        });
+    }
+    for (int y = 1; y < data.size.y - 1; ++y)
+    {
+        for (int x = 1; x < data.size.x - 1; ++x)
+        {
+            if (data.getCell({x, y}) != CellKind::Courtyard)
+            {
+                continue;
+            }
+            const glm::vec3 center = data.cellCenterWorld({x, y});
+            for (const glm::ivec2 d : kCardinalDirs)
+            {
+                const glm::ivec2 nb = glm::ivec2{x, y} + d;
+                if (data.inBounds(nb) && data.getCell(nb) != CellKind::Courtyard && data.isWalkable(nb))
+                {
+                    const glm::vec3 outward(static_cast<float>(d.x), 0.0f, static_cast<float>(d.y));
+                    const glm::vec3 gateCenter = center + outward * (halfCell + 0.22f);
+                    archFootprints.push_back({
+                        .centerXZ = glm::vec2(gateCenter.x, gateCenter.z),
+                        .forwardXZ = glm::vec2(outward.x, outward.z),
+                    });
+                }
+            }
+        }
+    }
+
+    auto conflictsWithArchOrPillar = [&](const glm::vec3 &pos) -> bool {
+        const glm::vec2 posXZ(pos.x, pos.z);
+        const float maxAcross = data.cellSize * 0.65f;
+        for (const ArchFootprint &arch : archFootprints)
+        {
+            const glm::vec2 delta = posXZ - arch.centerXZ;
+            const glm::vec2 right(-arch.forwardXZ.y, arch.forwardXZ.x);
+            const float along = std::abs(glm::dot(delta, arch.forwardXZ));
+            const float across = std::abs(glm::dot(delta, right));
+            if (along < 0.72f && across < maxAcross)
+            {
+                return true;
+            }
+        }
+        constexpr float minPillarDistSq = 0.55f * 0.55f;
+        for (const glm::vec3 &pillar : data.pillars)
+        {
+            const glm::vec2 d(pos.x - pillar.x, pos.z - pillar.z);
+            if (glm::dot(d, d) < minPillarDistSq)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
     for (int y = 1; y < data.size.y - 1; ++y)
     {
         for (int x = 1; x < data.size.x - 1; ++x)
@@ -656,17 +866,24 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
                 const glm::vec3 wallFace = center + outward * halfCell;
                 const float wallYaw = std::atan2(inward.x, inward.z);
 
-                // Wall torches (spaced by torchMinSpacingCells, always allowed at start cell & shrines)
+                // Wall torches (spaced by torchMinSpacingCells, avoiding arch pilasters and corner pillars)
                 if (desc.enableTorches)
                 {
                     const bool passChecker = !desc.torchCheckerFilter || (((x * 3 + y * 5) % 2) == 0);
                     const bool guaranteedSpot = shrineOrExit || cell == data.startCell;
                     if (guaranteedSpot || (passChecker && unitRand(eng) < desc.torchWallChance))
                     {
-                        const glm::vec3 torchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
-                        if (!hasNearbyTorch(torchPos))
+                        const float sideShift = (((x + y) & 1) == 0) ? 0.85f : -0.85f;
+                        const std::array<float, 3> tangentOffsets{0.0f, sideShift, -sideShift};
+                        const glm::vec3 baseTorchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
+                        for (const float off : tangentOffsets)
                         {
-                            data.wallTorches.push_back(PropSpawn{torchPos, inward, wallYaw, 1.0f});
+                            const glm::vec3 candPos = baseTorchPos + tangent * off;
+                            if (!conflictsWithArchOrPillar(candPos) && !hasNearbyTorch(candPos))
+                            {
+                                data.wallTorches.push_back(PropSpawn{candPos, inward, wallYaw, 1.0f});
+                                break;
+                            }
                         }
                     }
                 }
@@ -768,10 +985,11 @@ MazeMapData generateMaze(const MazeGenDesc &desc)
         fillCourtyard(data, start, eng, courtyards);
     }
 
-    fillCorridor(data, start, eng);
+    fillCorridor(data, start, eng, desc);
     openCourtyard(data, eng, courtyards);
     resolveDeadEndsExitAndTreasures(data, start, eng, desc);
     braidSpareDeadEnds(data, eng, std::clamp(desc.braidRatio, 0.0f, 1.0f));
+    // addLongLoopShortcuts(data, start, eng, desc.extraLoopCount);
     populatePillarsAndBeams(data, desc);
     populateOases(data, courtyards, eng, desc);
     populateProps(data, eng, desc);

@@ -22,8 +22,7 @@ void SSAOPass::reloadShaders(const std::filesystem::path &shaderDir)
 
 void SSAOPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    (void)ctx;
-    if (res.aoWidth() <= 0 || res.aoHeight() <= 0)
+    if (!ctx.features.enableSsao || res.aoWidth() <= 0 || res.aoHeight() <= 0)
     {
         return;
     }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -48,12 +49,74 @@ namespace
     return planes;
 }
 
+[[nodiscard]] int prevPow2(int v) noexcept
+{
+    int p = 1;
+    while ((p << 1) <= v)
+    {
+        p <<= 1;
+    }
+    return p;
+}
+
+[[nodiscard]] glm::ivec2 chooseHzbExtent(int width, int height) noexcept
+{
+    constexpr int kMinDim = 64;
+    constexpr std::int64_t kMaxPixels = 262144;
+    int w = std::clamp(prevPow2(std::max(1, width / 2)), kMinDim, 1024);
+    int h = std::clamp(prevPow2(std::max(1, height / 2)), kMinDim, 1024);
+    const float targetAspect = static_cast<float>(std::max(1, width)) / static_cast<float>(std::max(1, height));
+
+    while (static_cast<std::int64_t>(w) * h > kMaxPixels && (w > kMinDim || h > kMinDim))
+    {
+        if (w <= kMinDim)
+        {
+            h >>= 1;
+            continue;
+        }
+        if (h <= kMinDim)
+        {
+            w >>= 1;
+            continue;
+        }
+        const float aspectHalveW = static_cast<float>(w >> 1) / static_cast<float>(h);
+        const float aspectHalveH = static_cast<float>(w) / static_cast<float>(h >> 1);
+        const float errW = std::max(aspectHalveW / targetAspect, targetAspect / aspectHalveW);
+        const float errH = std::max(aspectHalveH / targetAspect, targetAspect / aspectHalveH);
+        if (errW <= errH)
+        {
+            w >>= 1;
+        }
+        else
+        {
+            h >>= 1;
+        }
+    }
+    return glm::ivec2(w, h);
+}
+
+[[nodiscard]] int computeMipCount(glm::ivec2 size) noexcept
+{
+    int maxDim = std::max(1, std::max(size.x, size.y));
+    int mips = 1;
+    while (maxDim > 1)
+    {
+        maxDim >>= 1;
+        ++mips;
+    }
+    return mips;
+}
+
 } // namespace
 
-RenderResources::RenderResources()
+RenderResources::RenderResources(bool deferMaterialGen)
 {
-    m_frameUbo = GpuBuffer::createPersistentMapped(sizeof(FrameUniforms));
+    for (GpuBuffer &ubo : m_frameUboRing)
+    {
+        ubo = GpuBuffer::createPersistentMapped(sizeof(FrameUniforms));
+    }
     m_lightsSSBO = GpuBuffer::createDynamic(sizeof(GpuPointLight));
+    m_flamesSSBO = GpuBuffer::createDynamic(sizeof(FlameInstance));
     m_clusterCountsSSBO = GpuBuffer::createImmutable(kTotalClusters * sizeof(std::uint32_t));
     m_clusterIndicesSSBO = GpuBuffer::createImmutable(kTotalClusters * kMaxLightsPerCluster * sizeof(std::uint32_t));
 
@@ -86,6 +149,80 @@ RenderResources::RenderResources()
     m_shadowFbo.setNoColorBuffer();
     m_shadowFbo.ensureComplete();
 
+    // Top-4 cached omnidirectional point shadow cubemap array (256x256 x 6 faces x 4 slots)
+    glCreateTextures(GL_TEXTURE_CUBE_MAP_ARRAY, 1, &m_pointShadowCubeArray);
+    glTextureStorage3D(
+        m_pointShadowCubeArray,
+        1,
+        GL_DEPTH_COMPONENT32F,
+        kPointShadowSize,
+        kPointShadowSize,
+        kMaxPointShadowCasters * 6);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTextureParameteri(m_pointShadowCubeArray, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    const float oneDepth = 1.0f;
+    glClearTexImage(m_pointShadowCubeArray, 0, GL_DEPTH_COMPONENT, GL_FLOAT, &oneDepth);
+
+    m_pointShadowFbo = gl::Framebuffer::create();
+    m_pointShadowFbo.bind();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, m_pointShadowCubeArray, 0, 0);
+    m_pointShadowFbo.setNoColorBuffer();
+    m_pointShadowFbo.ensureComplete();
+
+    // 1x1 neutral fallback textures so disabled passes can be skipped without shader branches
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_dummyShadowTex);
+    glTextureStorage2D(m_dummyShadowTex, 1, GL_DEPTH_COMPONENT32F, 1, 1);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTextureParameteri(m_dummyShadowTex, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    glClearTexImage(m_dummyShadowTex, 0, GL_DEPTH_COMPONENT, GL_FLOAT, &oneDepth);
+
+    glCreateTextures(GL_TEXTURE_CUBE_MAP_ARRAY, 1, &m_dummyPointShadowTex);
+    glTextureStorage3D(m_dummyPointShadowTex, 1, GL_DEPTH_COMPONENT32F, 1, 1, 6);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTextureParameteri(m_dummyPointShadowTex, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    glClearTexImage(m_dummyPointShadowTex, 0, GL_DEPTH_COMPONENT, GL_FLOAT, &oneDepth);
+
+    const std::uint8_t whiteByte = 255u;
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_dummyWhiteR8Tex);
+    glTextureStorage2D(m_dummyWhiteR8Tex, 1, GL_R8, 1, 1);
+    glTextureParameteri(m_dummyWhiteR8Tex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(m_dummyWhiteR8Tex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glClearTexImage(m_dummyWhiteR8Tex, 0, GL_RED, GL_UNSIGNED_BYTE, &whiteByte);
+
+    const std::array<float, 4> blackZero{0.0f, 0.0f, 0.0f, 0.0f};
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_dummyBlackTex);
+    glTextureStorage2D(m_dummyBlackTex, 1, GL_R11F_G11F_B10F, 1, 1);
+    glTextureParameteri(m_dummyBlackTex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(m_dummyBlackTex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glClearTexImage(m_dummyBlackTex, 0, GL_RGB, GL_FLOAT, blackZero.data());
+
+    glCreateTextures(GL_TEXTURE_3D, 1, &m_dummyZero3DTex);
+    glTextureStorage3D(m_dummyZero3DTex, 1, GL_RGBA16F, 1, 1, 1);
+    glTextureParameteri(m_dummyZero3DTex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(m_dummyZero3DTex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glClearTexImage(m_dummyZero3DTex, 0, GL_RGBA, GL_FLOAT, blackZero.data());
+
+    const std::array<float, 4> neutralFog{0.0f, 0.0f, 0.0f, 1.0f};
+    glCreateTextures(GL_TEXTURE_3D, 1, &m_dummyNeutralFog3DTex);
+    glTextureStorage3D(m_dummyNeutralFog3DTex, 1, GL_RGBA16F, 1, 1, 1);
+    glTextureParameteri(m_dummyNeutralFog3DTex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(m_dummyNeutralFog3DTex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glClearTexImage(m_dummyNeutralFog3DTex, 0, GL_RGBA, GL_FLOAT, neutralFog.data());
+
     // 3D froxel volumetric fog ping-pong history + front-to-back accumulated scatter/transmittance
     const std::array<float, 4> zeroFog{0.0f, 0.0f, 0.0f, 0.0f};
     const std::array<float, 4> clearAccum{0.0f, 0.0f, 0.0f, 1.0f};
@@ -110,11 +247,22 @@ RenderResources::RenderResources()
     createFog3D(m_fogVolumeTex[1], zeroFog);
     createFog3D(m_fogAccumTex, clearAccum);
 
-    createStarterMaterialArrays();
+    if (!deferMaterialGen)
+    {
+        createStarterMaterialArrays();
+    }
 }
 
 RenderResources::~RenderResources()
 {
+    for (GLsync &fence : m_frameUboFences)
+    {
+        if (fence != nullptr)
+        {
+            glDeleteSync(fence);
+            fence = nullptr;
+        }
+    }
     auto delTex = [](GLuint &id)
     {
         if (id != 0)
@@ -136,6 +284,18 @@ RenderResources::~RenderResources()
         delTex(fog);
     }
     delTex(m_fogAccumTex);
+    for (GLuint &hzb : m_hzbTex)
+    {
+        delTex(hzb);
+    }
+    delTex(m_bloomTex);
+    delTex(m_pointShadowCubeArray);
+    delTex(m_dummyShadowTex);
+    delTex(m_dummyPointShadowTex);
+    delTex(m_dummyWhiteR8Tex);
+    delTex(m_dummyBlackTex);
+    delTex(m_dummyZero3DTex);
+    delTex(m_dummyNeutralFog3DTex);
     if (m_emptyVao != 0)
     {
         glDeleteVertexArrays(1, &m_emptyVao);
@@ -255,6 +415,17 @@ void RenderResources::onResize(int width, int height)
         .wrapS = GL_CLAMP_TO_EDGE,
         .wrapT = GL_CLAMP_TO_EDGE,
     });
+    m_giScreenTex.create2D(gl::Texture2DDesc{
+        .width = m_aoWidth,
+        .height = m_aoHeight,
+        .internalFormat = GL_RGBA16F,
+        .format = GL_RGBA,
+        .type = GL_FLOAT,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+    });
 
     const GLenum gbufTargets[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
     m_gbufferFbo = gl::Framebuffer::create();
@@ -282,20 +453,81 @@ void RenderResources::onResize(int width, int height)
     m_aoFbo.setDrawBuffers(singleTarget);
     m_aoFbo.ensureComplete();
 
+    m_giScreenFbo = gl::Framebuffer::create();
+    m_giScreenFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_giScreenTex);
+    m_giScreenFbo.setDrawBuffers(singleTarget);
+    m_giScreenFbo.ensureComplete();
+
     m_hdrFbo = gl::Framebuffer::create();
     m_hdrFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_hdrTex);
     m_hdrFbo.setDrawBuffers(singleTarget);
     m_hdrFbo.ensureComplete();
 
+    m_hdrDepthFbo = gl::Framebuffer::create();
+    m_hdrDepthFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_hdrTex);
+    m_hdrDepthFbo.attachTexture2D(GL_DEPTH_ATTACHMENT, m_depthTex);
+    m_hdrDepthFbo.setDrawBuffers(singleTarget);
+    m_hdrDepthFbo.ensureComplete();
+
     m_ldrFbo = gl::Framebuffer::create();
     m_ldrFbo.attachTexture2D(GL_COLOR_ATTACHMENT0, m_ldrTex);
     m_ldrFbo.setDrawBuffers(singleTarget);
     m_ldrFbo.ensureComplete();
+
+    m_hzbSize = chooseHzbExtent(m_width, m_height);
+    m_hzbMipCount = computeMipCount(m_hzbSize);
+    m_hzbValid = false;
+    const float zeroDepth = 0.0f;
+    for (GLuint &hzb : m_hzbTex)
+    {
+        if (hzb != 0)
+        {
+            glDeleteTextures(1, &hzb);
+            hzb = 0;
+        }
+        glCreateTextures(GL_TEXTURE_2D, 1, &hzb);
+        glTextureStorage2D(hzb, m_hzbMipCount, GL_R32F, m_hzbSize.x, m_hzbSize.y);
+        glTextureParameteri(hzb, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+        glTextureParameteri(hzb, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTextureParameteri(hzb, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(hzb, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(hzb, GL_TEXTURE_MAX_LEVEL, m_hzbMipCount - 1);
+        for (int mip = 0; mip < m_hzbMipCount; ++mip)
+        {
+            glClearTexImage(hzb, mip, GL_RED, GL_FLOAT, &zeroDepth);
+        }
+    }
+
+    // Half-res R11F_G11F_B10F mip pyramid for Jimenez 13-tap downsample / 9-tap tent upsample HDR bloom
+    m_bloomSize = glm::ivec2(std::max(1, (m_width + 1) / 2), std::max(1, (m_height + 1) / 2));
+    m_bloomMipCount = std::min(6, computeMipCount(m_bloomSize));
+    if (m_bloomTex != 0)
+    {
+        glDeleteTextures(1, &m_bloomTex);
+        m_bloomTex = 0;
+    }
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_bloomTex);
+    glTextureStorage2D(m_bloomTex, m_bloomMipCount, GL_R11F_G11F_B10F, m_bloomSize.x, m_bloomSize.y);
+    glTextureParameteri(m_bloomTex, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+    glTextureParameteri(m_bloomTex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(m_bloomTex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_bloomTex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(m_bloomTex, GL_TEXTURE_MAX_LEVEL, m_bloomMipCount - 1);
+
+    m_bloomFbo = gl::Framebuffer::create();
+    m_bloomFbo.bind();
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_bloomTex, 0);
+    m_bloomFbo.setDrawBuffers(singleTarget);
+    m_bloomFbo.ensureComplete();
 }
 
-void RenderResources::setPointLights(std::span<const GpuPointLight> lights)
+void RenderResources::setPointLights(std::span<const GpuPointLight> lights, std::size_t shadowCasterCount)
 {
     m_lightCount = static_cast<std::uint32_t>(lights.size());
+    m_cpuLights.assign(lights.begin(), lights.end());
+    m_shadowCasterLightCount = std::min(shadowCasterCount, m_cpuLights.size());
+    invalidatePointShadows();
+
     const std::size_t requiredBytes = std::max<std::size_t>(sizeof(GpuPointLight), lights.size_bytes());
     if (requiredBytes > m_lightsSSBO.sizeBytes())
     {
@@ -307,17 +539,206 @@ void RenderResources::setPointLights(std::span<const GpuPointLight> lights)
     }
 }
 
+void RenderResources::setFlames(std::span<const FlameInstance> flames)
+{
+    m_flameCount = static_cast<std::uint32_t>(flames.size());
+    const std::size_t requiredBytes = std::max<std::size_t>(sizeof(FlameInstance), flames.size_bytes());
+    if (requiredBytes > m_flamesSSBO.sizeBytes())
+    {
+        m_flamesSSBO = GpuBuffer::createDynamic(requiredBytes, flames.data());
+    }
+    else if (!flames.empty())
+    {
+        m_flamesSSBO.upload(0, flames.size_bytes(), flames.data());
+    }
+}
+
 void RenderResources::updatePointLight(std::uint32_t index, const GpuPointLight &light)
 {
     if (index >= m_lightCount)
     {
         return;
     }
+    m_cpuLights[index] = light;
+    for (PointShadowSlot &slot : m_pointShadowSlots)
+    {
+        if (slot.lightIndex == static_cast<int>(index))
+        {
+            const glm::vec3 newPos(light.positionRadius);
+            const float newRadius = light.positionRadius.w;
+            if (glm::distance(slot.pos, newPos) > 1e-4f || std::abs(slot.radius - newRadius) > 1e-4f)
+            {
+                slot.pos = newPos;
+                slot.radius = newRadius;
+                slot.dirty = true;
+            }
+        }
+    }
     m_lightsSSBO.upload(static_cast<std::size_t>(index) * sizeof(GpuPointLight), sizeof(GpuPointLight), &light);
+}
+
+void RenderResources::invalidatePointShadows() noexcept
+{
+    for (PointShadowSlot &slot : m_pointShadowSlots)
+    {
+        slot = PointShadowSlot{};
+    }
+    m_pointShadowBurst = true;
+}
+
+void RenderResources::updatePointShadowSlots(const glm::vec3 &cameraPos, bool allowMultiSwap)
+{
+    if (m_shadowCasterLightCount == 0 || m_cpuLights.empty())
+    {
+        for (PointShadowSlot &slot : m_pointShadowSlots)
+        {
+            slot.lightIndex = -1;
+            slot.fade = 0.0f;
+            slot.dirty = false;
+        }
+        return;
+    }
+
+    struct LightCandidate
+    {
+        int index = 0;
+        float dist = 0.0f;
+        float rankDist = 0.0f;
+    };
+
+    auto isCached = [&](int lightIdx) noexcept -> bool
+    {
+        for (const PointShadowSlot &slot : m_pointShadowSlots)
+        {
+            if (slot.lightIndex == lightIdx)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    std::vector<LightCandidate> sorted;
+    sorted.reserve(m_shadowCasterLightCount);
+    for (std::size_t i = 0; i < m_shadowCasterLightCount; ++i)
+    {
+        const glm::vec3 pos(m_cpuLights[i].positionRadius);
+        const float dist = glm::distance(pos, cameraPos);
+        const float hysteresis = isCached(static_cast<int>(i)) ? 0.85f : 0.0f;
+        sorted.push_back({static_cast<int>(i), dist, dist - hysteresis});
+    }
+
+    std::sort(sorted.begin(), sorted.end(), [](const LightCandidate &a, const LightCandidate &b)
+    {
+        return a.dist < b.dist;
+    });
+
+    const float fifthDist = (sorted.size() > static_cast<std::size_t>(kMaxPointShadowCasters))
+                                ? sorted[static_cast<std::size_t>(kMaxPointShadowCasters)].dist
+                                : 1e6f;
+
+    std::sort(sorted.begin(), sorted.end(), [](const LightCandidate &a, const LightCandidate &b)
+    {
+        return a.rankDist < b.rankDist;
+    });
+
+    constexpr float kMaxShadowRange = 28.0f;
+    std::array<int, kMaxPointShadowCasters> desired{-1, -1, -1, -1};
+    int desiredCount = 0;
+    for (const LightCandidate &cand : sorted)
+    {
+        if (desiredCount >= kMaxPointShadowCasters || cand.dist > kMaxShadowRange)
+        {
+            break;
+        }
+        desired[static_cast<std::size_t>(desiredCount++)] = cand.index;
+    }
+
+    auto isDesired = [&](int lightIdx) noexcept -> bool
+    {
+        for (int i = 0; i < desiredCount; ++i)
+        {
+            if (desired[static_cast<std::size_t>(i)] == lightIdx)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int i = 0; i < desiredCount; ++i)
+    {
+        const int targetIdx = desired[static_cast<std::size_t>(i)];
+        if (isCached(targetIdx))
+        {
+            continue;
+        }
+
+        // Prefer empty slot first, otherwise evict the farthest non-desired slot
+        int replaceSlot = -1;
+        float farthestDist = -1.0f;
+        for (int s = 0; s < kMaxPointShadowCasters; ++s)
+        {
+            const PointShadowSlot &slot = m_pointShadowSlots[static_cast<std::size_t>(s)];
+            if (slot.lightIndex < 0)
+            {
+                replaceSlot = s;
+                break;
+            }
+            if (!isDesired(slot.lightIndex))
+            {
+                const float d = glm::distance(slot.pos, cameraPos);
+                if (d > farthestDist)
+                {
+                    farthestDist = d;
+                    replaceSlot = s;
+                }
+            }
+        }
+
+        if (replaceSlot < 0)
+        {
+            break;
+        }
+
+        PointShadowSlot &dst = m_pointShadowSlots[static_cast<std::size_t>(replaceSlot)];
+        dst.lightIndex = targetIdx;
+        dst.pos = glm::vec3(m_cpuLights[static_cast<std::size_t>(targetIdx)].positionRadius);
+        dst.radius = std::max(0.5f, m_cpuLights[static_cast<std::size_t>(targetIdx)].positionRadius.w);
+        dst.dirty = true;
+
+        if (!allowMultiSwap)
+        {
+            break;
+        }
+    }
+
+    const float fadeEnd = std::min(24.0f, fifthDist);
+    const float fadeStart = fadeEnd * 0.72f;
+    for (PointShadowSlot &slot : m_pointShadowSlots)
+    {
+        if (slot.lightIndex < 0)
+        {
+            slot.fade = 0.0f;
+            slot.dirty = false;
+            continue;
+        }
+        const float ds = glm::distance(slot.pos, cameraPos);
+        const float t = std::clamp((fadeEnd - ds) / std::max(fadeEnd - fadeStart, 0.5f), 0.0f, 1.0f);
+        slot.fade = t * t * (3.0f - 2.0f * t);
+    }
 }
 
 void RenderResources::updateFrameUniforms(const RenderContext &ctx)
 {
+    m_frameUboSlot = (m_frameUboSlot + 1u) % kFrameUboSlots;
+    if (m_frameUboFences[m_frameUboSlot] != nullptr)
+    {
+        glClientWaitSync(m_frameUboFences[m_frameUboSlot], GL_SYNC_FLUSH_COMMANDS_BIT, 1'000'000'000ULL);
+        glDeleteSync(m_frameUboFences[m_frameUboSlot]);
+        m_frameUboFences[m_frameUboSlot] = nullptr;
+    }
+
     const glm::mat4 vp = ctx.proj * ctx.view;
 
     FrameUniforms ubo;
@@ -338,8 +759,13 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
     ubo.clusterDims = glm::uvec4(kClusterCountX, kClusterCountY, kClusterCountZ, kMaxLightsPerCluster);
 
     // Texel-snapped directional moonlight orthographic matrix tracking the camera
-    const glm::vec3 lightDir = glm::normalize(glm::vec3(0.45f, 0.85f, 0.35f));
-    const glm::mat4 lightView = glm::lookAt(glm::vec3(0.0f), -lightDir, glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::vec3 lightDir = (glm::dot(ctx.moonDirection, ctx.moonDirection) > 1e-6f)
+        ? glm::normalize(ctx.moonDirection)
+        : glm::normalize(glm::vec3(0.45f, 0.85f, 0.35f));
+    const glm::vec3 shadowUp = (glm::length(glm::vec2(lightDir.x, lightDir.z)) > 1e-3f)
+        ? glm::vec3(0.0f, 1.0f, 0.0f)
+        : glm::vec3(0.0f, 0.0f, 1.0f);
+    const glm::mat4 lightView = glm::lookAt(glm::vec3(0.0f), -lightDir, shadowUp);
     const glm::vec3 camLS = glm::vec3(lightView * glm::vec4(ctx.cameraPos.x, 0.0f, ctx.cameraPos.z, 1.0f));
     const float texelWorld = (2.0f * kShadowHalfExtent) / static_cast<float>(kShadowMapSize);
     const float snappedX = std::floor(camLS.x / texelWorld) * texelWorld;
@@ -351,7 +777,12 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
 
     ubo.lightViewProj = lightProj * lightView;
     ubo.shadowFrustumPlanes = extractZeroToOneFrustumPlanes(ubo.lightViewProj);
-    ubo.shadowParams = glm::vec4(1.0f / static_cast<float>(kShadowMapSize), kShadowHalfExtent, 1.0f, 0.0f);
+    ubo.shadowParams = glm::vec4(
+        1.0f / static_cast<float>(kShadowMapSize),
+        kShadowHalfExtent,
+        ctx.features.enableShadows ? 1.0f : 0.0f,
+        ctx.features.enablePointShadows ? 1.0f : 0.0f);
+    ubo.moonDir = glm::vec4(lightDir, 0.0f);
 
     if (hasGiGrid())
     {
@@ -367,13 +798,70 @@ void RenderResources::updateFrameUniforms(const RenderContext &ctx)
         ubo.giMisc = glm::vec4(m_giWallHeight, 0.0f, 0.0f, ctx.whiteboxMode ? 0.68f : 0.0f);
     }
 
+    const bool sceneChanged = (m_scene.generation() != m_lastHzbSceneGen);
+    const bool cameraJumped = (m_hasPrevCameraPos && glm::distance(ctx.cameraPos, m_prevCameraPos) > 4.0f);
+    if (sceneChanged || cameraJumped || !ctx.features.enableHzb)
+    {
+        m_hzbValid = false;
+    }
+    if (m_scene.generation() != m_lastPointShadowSceneGen)
+    {
+        invalidatePointShadows();
+        m_lastPointShadowSceneGen = m_scene.generation();
+    }
+    if (cameraJumped)
+    {
+        m_pointShadowBurst = true;
+    }
+    m_lastHzbSceneGen = m_scene.generation();
+    m_prevCameraPos = ctx.cameraPos;
+    m_hasPrevCameraPos = true;
+
+    if (ctx.features.enablePointShadows)
+    {
+        updatePointShadowSlots(ctx.cameraPos, m_pointShadowBurst);
+        m_pointShadowBurst = false;
+    }
+
+    std::uint32_t featureMask = 0u;
+    if (ctx.features.enableGi) { featureMask |= kFeatureGiBit; }
+    if (ctx.features.enableSsao) { featureMask |= kFeatureSsaoBit; }
+    if (ctx.features.enableFog) { featureMask |= kFeatureFogBit; }
+    if (ctx.features.enableBloom) { featureMask |= kFeatureBloomBit; }
+    if (ctx.features.enableSspr) { featureMask |= kFeatureSsrBit; }
+    if (ctx.features.enableShadows) { featureMask |= kFeatureShadowsBit; }
+    if (ctx.features.enablePointShadows) { featureMask |= kFeaturePointShadowsBit; }
+    if (ctx.features.enableIndirectOnly) { featureMask |= kFeatureIndirectOnlyBit; }
+
     ubo.prevViewProj = m_hasPrevViewProj ? m_prevViewProj : vp;
-    ubo.fogParams = glm::vec4(ctx.fogDensity, ctx.fogAnisotropy, ctx.fogHeightFalloff, ctx.fogFar);
-    ubo.fogDims = glm::uvec4(kFogVolumeWidth, kFogVolumeHeight, kFogVolumeDepth, 0u);
+    ubo.fogParams = glm::vec4(ctx.features.enableFog ? ctx.fogDensity : 0.0f, ctx.fogAnisotropy, ctx.fogHeightFalloff, ctx.fogFar);
+    ubo.fogDims = glm::uvec4(kFogVolumeWidth, kFogVolumeHeight, kFogVolumeDepth, featureMask);
+    ubo.hzbParams = ctx.features.enableHzb
+        ? glm::uvec4(static_cast<std::uint32_t>(m_hzbSize.x), static_cast<std::uint32_t>(m_hzbSize.y), static_cast<std::uint32_t>(m_hzbMipCount), m_hzbValid ? 1u : 0u)
+        : glm::uvec4(0u);
+    for (int s = 0; s < kMaxPointShadowCasters; ++s)
+    {
+        const PointShadowSlot &slot = m_pointShadowSlots[static_cast<std::size_t>(s)];
+        const bool slotActive = ctx.features.enablePointShadows && (slot.lightIndex >= 0);
+        ubo.pointShadowMeta[static_cast<std::size_t>(s)] = glm::uvec4(
+            slotActive ? static_cast<std::uint32_t>(slot.lightIndex) : 0xFFFFFFFFu,
+            std::bit_cast<std::uint32_t>(kPointShadowNear),
+            std::bit_cast<std::uint32_t>(slot.radius),
+            std::bit_cast<std::uint32_t>(slot.fade));
+    }
     m_prevViewProj = vp;
     m_hasPrevViewProj = true;
 
-    std::memcpy(m_frameUbo.mappedPtr(), &ubo, sizeof(FrameUniforms));
+    std::memcpy(m_frameUboRing[m_frameUboSlot].mappedPtr(), &ubo, sizeof(FrameUniforms));
+}
+
+void RenderResources::markFrameSubmitted() noexcept
+{
+    if (m_frameUboFences[m_frameUboSlot] != nullptr)
+    {
+        glDeleteSync(m_frameUboFences[m_frameUboSlot]);
+    }
+    m_frameUboFences[m_frameUboSlot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
 void RenderResources::initGiGrid(glm::ivec2 gridSize, float cellSize, float wallHeight, std::span<const std::uint8_t> cellKinds)
@@ -472,24 +960,10 @@ void RenderResources::drawFullscreenTriangle() const noexcept
     glBindVertexArray(0);
 }
 
-void RenderResources::createStarterMaterialArrays()
+StarterMaterialsCpuData RenderResources::generateStarterMaterialsCpu()
 {
     constexpr int srcSize = 256;
     constexpr int dstSize = kMaterialArraySize;
-    constexpr int layers = kMaterialArrayLayers; // 0=floor, 1=brick, 2=gold, 3=vine, 4=sand, 5=water, 6=palm, 7=foliage, 8=wood
-
-    auto createArray = [&](GLuint &texId)
-    {
-        glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &texId);
-        glTextureStorage3D(texId, kMaterialMipLevels, GL_RGBA8, dstSize, dstSize, layers);
-        glTextureParameteri(texId, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTextureParameteri(texId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTextureParameteri(texId, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTextureParameteri(texId, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    };
-    createArray(m_albedoArrayTex);
-    createArray(m_ormArrayTex);
-    createArray(m_normalArrayTex);
 
     struct StarterTexel
     {
@@ -500,12 +974,11 @@ void RenderResources::createStarterMaterialArrays()
         float height = 0.5f;
     };
 
+    StarterMaterialsCpuData result;
+    result.layers.reserve(6);
     std::vector<StarterTexel> srcTexels(static_cast<std::size_t>(srcSize * srcSize));
-    std::vector<std::uint8_t> albedoPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
-    std::vector<std::uint8_t> ormPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
-    std::vector<std::uint8_t> normalPixels(static_cast<std::size_t>(dstSize * dstSize * 4));
 
-    auto uploadLayer = [&](int layer, float normalStrength, auto &&generator)
+    auto buildLayer = [&](int layer, float normalStrength, auto &&generator)
     {
         for (int y = 0; y < srcSize; ++y)
         {
@@ -514,6 +987,13 @@ void RenderResources::createStarterMaterialArrays()
                 srcTexels[static_cast<std::size_t>(y * srcSize + x)] = generator(x, y);
             }
         }
+
+        StarterMaterialsCpuData::Layer outLayer;
+        outLayer.layerIndex = layer;
+        const std::size_t byteCount = static_cast<std::size_t>(dstSize * dstSize * 4);
+        outLayer.albedoPixels.resize(byteCount);
+        outLayer.ormPixels.resize(byteCount);
+        outLayer.normalPixels.resize(byteCount);
 
         const float scale = static_cast<float>(srcSize) / static_cast<float>(dstSize);
         for (int y = 0; y < dstSize; ++y)
@@ -559,25 +1039,23 @@ void RenderResources::createStarterMaterialArrays()
                 const glm::vec3 nrm = glm::normalize(glm::vec3((hL - hR) * normalStrength, (hD - hU) * normalStrength, 1.0f));
 
                 const std::size_t idx = static_cast<std::size_t>((y * dstSize + x) * 4);
-                albedoPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(albedo.r, 0.0f, 1.0f) * 255.0f);
-                albedoPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(albedo.g, 0.0f, 1.0f) * 255.0f);
-                albedoPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(albedo.b, 0.0f, 1.0f) * 255.0f);
-                albedoPixels[idx + 3] = 255;
+                outLayer.albedoPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(albedo.r, 0.0f, 1.0f) * 255.0f);
+                outLayer.albedoPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(albedo.g, 0.0f, 1.0f) * 255.0f);
+                outLayer.albedoPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(albedo.b, 0.0f, 1.0f) * 255.0f);
+                outLayer.albedoPixels[idx + 3] = 255;
 
-                ormPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(ao, 0.0f, 1.0f) * 255.0f);
-                ormPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
-                ormPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(metallic, 0.0f, 1.0f) * 255.0f);
-                ormPixels[idx + 3] = 255;
+                outLayer.ormPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(ao, 0.0f, 1.0f) * 255.0f);
+                outLayer.ormPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(roughness, 0.0f, 1.0f) * 255.0f);
+                outLayer.ormPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(metallic, 0.0f, 1.0f) * 255.0f);
+                outLayer.ormPixels[idx + 3] = 255;
 
-                normalPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(nrm.x * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
-                normalPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(nrm.y * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
-                normalPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(nrm.z * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
-                normalPixels[idx + 3] = static_cast<std::uint8_t>(std::clamp(height, 0.0f, 1.0f) * 255.0f);
+                outLayer.normalPixels[idx + 0] = static_cast<std::uint8_t>(std::clamp(nrm.x * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                outLayer.normalPixels[idx + 1] = static_cast<std::uint8_t>(std::clamp(nrm.y * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                outLayer.normalPixels[idx + 2] = static_cast<std::uint8_t>(std::clamp(nrm.z * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
+                outLayer.normalPixels[idx + 3] = static_cast<std::uint8_t>(std::clamp(height, 0.0f, 1.0f) * 255.0f);
             }
         }
-        glTextureSubImage3D(m_albedoArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, albedoPixels.data());
-        glTextureSubImage3D(m_ormArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, ormPixels.data());
-        glTextureSubImage3D(m_normalArrayTex, 0, 0, 0, layer, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, normalPixels.data());
+        result.layers.push_back(std::move(outLayer));
     };
 
     auto srgbToLin = [](glm::vec3 c) -> glm::vec3
@@ -585,12 +1063,8 @@ void RenderResources::createStarterMaterialArrays()
         return glm::pow(glm::max(c, glm::vec3(0.0f)), glm::vec3(2.2f));
     };
 
-    // Layer 0 & Layer 1: placeholders immediately overwritten by GPU Compute Bake in initBakedMaterials()
-    uploadLayer(0, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.36f, 0.38f, 0.40f}), .roughness = 0.72f}; });
-    uploadLayer(1, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.46f, 0.48f, 0.49f}), .roughness = 0.80f}; });
-
     // Layer 2: Burnished antique metallic gold / brass with hammered surface relief for SOR relics
-    uploadLayer(2, 2.4f, [&](int x, int y) -> StarterTexel
+    buildLayer(2, 2.4f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
@@ -611,7 +1085,7 @@ void RenderResources::createStarterMaterialArrays()
     });
 
     // Layer 3: Stylized damp dungeon ivy vine & leaves (linear greens matching wall stone GI balance)
-    uploadLayer(3, 2.8f, [&](int x, int y) -> StarterTexel
+    buildLayer(3, 2.8f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
@@ -635,7 +1109,7 @@ void RenderResources::createStarterMaterialArrays()
     });
 
     // Layer 4..7: Oasis & foliage layers (preserved cleanly with periodic normals)
-    uploadLayer(4, 1.2f, [&](int x, int y) -> StarterTexel
+    buildLayer(4, 1.2f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
@@ -643,14 +1117,14 @@ void RenderResources::createStarterMaterialArrays()
         const glm::vec3 col = srgbToLin(glm::mix(glm::vec3(0.24f, 0.20f, 0.14f), glm::vec3(0.56f, 0.46f, 0.31f), u));
         return StarterTexel{.albedo = col, .roughness = glm::mix(0.45f, 0.90f, u), .height = 0.4f + 0.2f * grain};
     });
-    uploadLayer(5, 0.8f, [&](int x, int y) -> StarterTexel
+    buildLayer(5, 0.8f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
         const float caustic = 0.5f + 0.5f * std::sin(u * 18.849f + std::sin(v * 12.566f) * 1.6f) * std::cos(v * 18.849f);
         return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.05f, 0.24f, 0.28f), glm::vec3(0.11f, 0.40f, 0.42f), caustic * 0.55f)), .roughness = 0.12f, .height = 0.5f + 0.1f * caustic};
     });
-    uploadLayer(6, 2.0f, [&](int x, int y) -> StarterTexel
+    buildLayer(6, 2.0f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
@@ -658,8 +1132,7 @@ void RenderResources::createStarterMaterialArrays()
         const float bark = 0.5f + 0.5f * std::sin(u * 75.398f + v * 12.566f);
         return StarterTexel{.albedo = srgbToLin(glm::mix(glm::vec3(0.20f, 0.14f, 0.09f), glm::vec3(0.34f, 0.25f, 0.17f), ringBand)), .roughness = 0.86f, .height = 0.4f + 0.25f * bark};
     });
-    // Layer 7: Stylized botanical foliage (u < 0.12 = stems, u in [0.16..0.96] = leaf cross-width with center midrib at 0.56, v = root-to-tip)
-    uploadLayer(7, 2.4f, [&](int x, int y) -> StarterTexel
+    buildLayer(7, 2.4f, [&](int x, int y) -> StarterTexel
     {
         const float u = static_cast<float>(x) / 256.0f;
         const float v = static_cast<float>(y) / 256.0f;
@@ -689,12 +1162,45 @@ void RenderResources::createStarterMaterialArrays()
         };
     });
 
-    // Layer 8: placeholder overwritten by GPU Compute Wood Bake in initBakedMaterials()
-    uploadLayer(8, 1.0f, [&](int, int) -> StarterTexel { return StarterTexel{.albedo = srgbToLin({0.22f, 0.17f, 0.13f}), .roughness = 0.80f}; });
+    return result;
+}
+
+void RenderResources::uploadStarterMaterialArrays(const StarterMaterialsCpuData &cpuData)
+{
+    constexpr int dstSize = kMaterialArraySize;
+    constexpr int layers = kMaterialArrayLayers;
+
+    if (m_albedoArrayTex == 0)
+    {
+        auto createArray = [&](GLuint &texId)
+        {
+            glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &texId);
+            glTextureStorage3D(texId, kMaterialMipLevels, GL_RGBA8, dstSize, dstSize, layers);
+            glTextureParameteri(texId, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTextureParameteri(texId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(texId, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTextureParameteri(texId, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        };
+        createArray(m_albedoArrayTex);
+        createArray(m_ormArrayTex);
+        createArray(m_normalArrayTex);
+    }
+
+    for (const StarterMaterialsCpuData::Layer &layer : cpuData.layers)
+    {
+        glTextureSubImage3D(m_albedoArrayTex, 0, 0, 0, layer.layerIndex, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, layer.albedoPixels.data());
+        glTextureSubImage3D(m_ormArrayTex, 0, 0, 0, layer.layerIndex, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, layer.ormPixels.data());
+        glTextureSubImage3D(m_normalArrayTex, 0, 0, 0, layer.layerIndex, dstSize, dstSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, layer.normalPixels.data());
+    }
 
     glGenerateTextureMipmap(m_albedoArrayTex);
     glGenerateTextureMipmap(m_ormArrayTex);
     glGenerateTextureMipmap(m_normalArrayTex);
+}
+
+void RenderResources::createStarterMaterialArrays()
+{
+    uploadStarterMaterialArrays(generateStarterMaterialsCpu());
 }
 
 void RenderResources::initBakedMaterials(const std::filesystem::path &shaderDir)

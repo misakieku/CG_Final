@@ -271,12 +271,20 @@ void buildTempleWallTrim(const MazeMapData &map, render::MegaScene &scene, std::
     }
 }
 
-} // namespace
-
-MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc, render::GrassField *grassOut)
+MazeSceneHandles populateMazeSceneCpu(
+    const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc,
+    std::vector<render::GrassInstance> *grassInstancesOut, std::atomic<int> *stageOut)
 {
+    auto setStage = [&](int s)
+    {
+        if (stageOut != nullptr)
+        {
+            stageOut->store(s, std::memory_order_relaxed);
+        }
+    };
     using namespace render;
 
+    setStage(2);
     std::vector<FloorObstacleObb> floorObstacles;
     const float wallHeight = desc.wallHeight;
     const float cell = map.cellSize;
@@ -343,6 +351,7 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
         treasureModel = tryLoadSorModel(scene, exeDir / "myModel.dat", bevelBoxMesh);
     }
     const LoadedSorModel candleModel = tryLoadSorModel(scene, exeDir / "candle.dat", bevelBoxMesh);
+    const LoadedSorModel torchModel = tryLoadSorModel(scene, exeDir / "torch.dat", bevelBoxMesh);
     const LoadedSorModel vaseModel = tryLoadSorModel(scene, exeDir / "vase.dat", bevelBoxMesh);
     const LoadedSorModel cupModel = tryLoadSorModel(scene, exeDir / "cup.dat", bevelBoxMesh);
 
@@ -604,21 +613,49 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     MazeSceneHandles handles;
     handles.pointLights.reserve(map.wallTorches.size() + map.candles.size() + map.treasurePositions.size() + 1);
 
-    // Wall torches (bracket + shaft + glowing ember tip + primary warm point light)
+    // Wall torches (sconce bracket + turned torch.dat model + animated HDR flame + primary warm point light)
     const float torchScale = std::max(0.1f, desc.torchScale);
-    for (const PropSpawn &torch : map.wallTorches)
+    const std::uint32_t torchFlags = worldFlags | render::kObjectNoPointShadowFlag;
+    const float torchFitScale = torchModel.loaded ? torchModel.fitScale(0.56f * torchScale, 0.11f * torchScale) : 1.0f;
+    for (std::size_t tIdx = 0; tIdx < map.wallTorches.size(); ++tIdx)
     {
+        const PropSpawn &torch = map.wallTorches[tIdx];
         const glm::vec3 back = -torch.normal;
-        scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + back * (0.08f * torchScale), torch.yaw, glm::vec3(0.16f, 0.24f, 0.16f) * torchScale), worldFlags);
-        scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + glm::vec3(0.0f, 0.14f * torchScale, 0.0f), torch.yaw, glm::vec3(0.10f, 0.42f, 0.10f) * torchScale), worldFlags);
-        scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(torch.position + glm::vec3(0.0f, 0.39f * torchScale, 0.0f), torch.yaw, glm::vec3(0.13f, 0.14f, 0.13f) * torchScale));
+        scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + back * (0.09f * torchScale) + glm::vec3(0.0f, 0.08f * torchScale, 0.0f), torch.yaw, glm::vec3(0.14f, 0.18f, 0.18f) * torchScale), torchFlags);
 
-        const glm::vec3 lightPos = torch.position + torch.normal * (0.14f * torchScale) + glm::vec3(0.0f, 0.48f * torchScale, 0.0f);
+        glm::vec3 flameBasePos = torch.position + glm::vec3(0.0f, 0.34f * torchScale, 0.0f);
+        glm::vec3 lightPos = torch.position + torch.normal * (0.14f * torchScale) + glm::vec3(0.0f, 0.48f * torchScale, 0.0f);
+
+        if (torchModel.loaded)
+        {
+            const glm::vec3 pivotPos = torch.position + torch.normal * (0.03f * torchScale) + glm::vec3(0.0f, 0.14f * torchScale, 0.0f);
+            glm::mat4 torchModelMat = glm::translate(glm::mat4(1.0f), pivotPos);
+            torchModelMat = glm::rotate(torchModelMat, torch.yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+            torchModelMat = glm::rotate(torchModelMat, glm::radians(14.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+            torchModelMat = glm::scale(torchModelMat, glm::vec3(torchFitScale));
+            scene.addObject(torchModel.meshId, kMatGoldAccent, torchModelMat, render::kObjectVisibleFlag | render::kObjectNoPointShadowFlag);
+
+            const float localTopY = torchModel.minY + torchModel.height;
+            const glm::vec3 cupTopWorld = glm::vec3(torchModelMat * glm::vec4(0.0f, localTopY, 0.0f, 1.0f));
+            flameBasePos = cupTopWorld - glm::vec3(0.0f, 0.025f * torchScale, 0.0f);
+            lightPos = cupTopWorld + glm::vec3(0.0f, 0.15f * torchScale, 0.0f);
+        }
+        else
+        {
+            scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + glm::vec3(0.0f, 0.14f * torchScale, 0.0f), torch.yaw, glm::vec3(0.10f, 0.42f, 0.10f) * torchScale), torchFlags);
+        }
+
+        handles.flames.push_back(FlameInstance{
+            .posWidth = glm::vec4(flameBasePos, 0.22f * torchScale),
+            .heightSeed = glm::vec4(0.36f * torchScale, static_cast<float>(tIdx) * 1.37f, 5.5f, 1.0f),
+        });
+
         handles.pointLights.push_back(GpuPointLight{
             .positionRadius = glm::vec4(lightPos, desc.torchLight.radius),
             .colorIntensity = glm::vec4(desc.torchLight.color, desc.torchLight.intensity),
         });
     }
+    handles.torchLightCount = handles.pointLights.size();
 
     // Clustered candles sharing 1 soft low-intensity light per anchor
     std::mt19937 propRng(desc.propSeed);
@@ -695,7 +732,10 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
                 scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(cPos + glm::vec3(0.0f, h * 0.5f, 0.0f), yaw, glm::vec3(w, h, w)), worldFlags);
                 flameY = h;
             }
-            scene.addObject(bevelBoxMesh, kMatGoldAccent, makeTransform(cPos + glm::vec3(0.0f, flameY + 0.03f, 0.0f), yaw, glm::vec3(0.045f, 0.07f, 0.045f)));
+            handles.flames.push_back(FlameInstance{
+                .posWidth = glm::vec4(cPos + glm::vec3(0.0f, flameY - 0.005f, 0.0f), 0.068f * wScale),
+                .heightSeed = glm::vec4(0.12f * hScale, unit(propRng) * 20.0f, 4.2f, 0.0f),
+            });
             floorObstacles.push_back(FloorObstacleObb::fromYaw({cPos.x, cPos.z}, yaw, glm::vec2(0.18f, 0.18f)));
             maxFlameY = std::max(maxFlameY, flameY);
         }
@@ -825,16 +865,43 @@ MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene
     });
 
     // Stylized courtyard bushes framing open ruins + AABB-guided crawling vines
+    setStage(3);
     handles.bushPositions = populateCourtyardBushes(map, scene, kMatBushFoliage, floorObstacles, desc.foliage);
 
     VineGenDesc vineDesc = desc.vines;
     vineDesc.wallHeight = wallHeight;
     generateDungeonVines(map, scene, kMatVineMoss, vineDesc);
 
+    if (grassInstancesOut != nullptr)
+    {
+        setStage(4);
+        *grassInstancesOut = generateMazeGrass(map, floorObstacles, desc.foliage);
+    }
+    return handles;
+}
+
+} // namespace
+
+BuiltMazeSceneCpu buildMazeSceneCpu(const MazeGenDesc &mapDesc, const MazeSceneDesc &sceneDesc, const std::filesystem::path &exeDir, std::atomic<int> *stageOut)
+{
+    if (stageOut != nullptr)
+    {
+        stageOut->store(1, std::memory_order_relaxed);
+    }
+    BuiltMazeSceneCpu result;
+    result.map = generateMaze(mapDesc);
+    result.wallHeight = sceneDesc.wallHeight;
+    result.handles = populateMazeSceneCpu(result.map, result.scene, exeDir, sceneDesc, &result.grassInstances, stageOut);
+    return result;
+}
+
+MazeSceneHandles buildMazeScene(const MazeMapData &map, render::MegaScene &scene, const std::filesystem::path &exeDir, const MazeSceneDesc &desc, render::GrassField *grassOut)
+{
+    std::vector<render::GrassInstance> grassInstances;
+    MazeSceneHandles handles = populateMazeSceneCpu(map, scene, exeDir, desc, (grassOut != nullptr) ? &grassInstances : nullptr, nullptr);
     scene.buildGpuBuffers();
     if (grassOut != nullptr)
     {
-        const std::vector<render::GrassInstance> grassInstances = generateMazeGrass(map, floorObstacles, desc.foliage);
         grassOut->uploadInstances(grassInstances);
     }
     return handles;

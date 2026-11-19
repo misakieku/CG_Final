@@ -1,5 +1,14 @@
 #pragma once
 
+const uint kFeatureGiBit = 1u;
+const uint kFeatureSsaoBit = 2u;
+const uint kFeatureFogBit = 4u;
+const uint kFeatureBloomBit = 8u;
+const uint kFeatureSsrBit = 16u;
+const uint kFeatureShadowsBit = 32u;
+const uint kFeaturePointShadowsBit = 64u;
+const uint kFeatureIndirectOnlyBit = 128u;
+
 layout(std140, binding = 0) uniform FrameUBO
 {
     mat4 uView;
@@ -15,14 +24,17 @@ layout(std140, binding = 0) uniform FrameUBO
     uvec4 uClusterDims; // x = NX, y = NY, z = NZ, w = maxLightsPerCluster
     mat4 uLightViewProj;
     vec4 uShadowFrustumPlanes[6];
-    vec4 uShadowParams;  // x = invShadowSize, y = halfExtent, z = enabled, w = unused
+    vec4 uShadowParams;  // x = invShadowSize, y = halfExtent, z = dirShadowEnabled, w = pointShadowEnabled
+    vec4 uMoonDir;       // xyz = normalized direction toward moon
     vec4 uGiGridOrigin;  // xyz = probe(0,0,0) world pos, w = probeStepXZ
     vec4 uGiGridInvStep; // xyz = 1/probeStep, w = cellSize
     uvec4 uGiDims;       // x = nx, y = ny, z = nz, w = totalProbes
     vec4 uGiMisc;        // x = wallHeight, y = gridW, z = gridH, w = whiteboxAlbedo
     mat4 uPrevViewProj;
     vec4 uFogParams;     // x = density, y = anisotropy, z = heightFalloff, w = fogFar
-    uvec4 uFogDims;      // x = nx, y = ny, z = nz, w = unused
+    uvec4 uFogDims;      // x = nx, y = ny, z = nz, w = featureMask
+    uvec4 uHzbParams;    // x = width, y = height, z = mipCount, w = prevHzbValid
+    uvec4 uPointShadowMeta[4]; // x = lightIdx (0xFFFFFFFFu = none), y = nearBits, z = farBits, w = fadeBits
 };
 
 vec3 reconstructWorldPos(vec2 screenUV, float reversedZDepth)

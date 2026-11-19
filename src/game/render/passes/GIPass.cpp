@@ -19,11 +19,12 @@ void GIPass::reloadShaders(const std::filesystem::path &shaderDir)
     m_compactShader = gl::Shader::compileComputeFile(shaderDir / "passes/gi_compact.comp", shaderDir);
     m_traceShader = gl::Shader::compileComputeFile(shaderDir / "passes/gi_trace.comp", shaderDir);
     m_blendShader = gl::Shader::compileComputeFile(shaderDir / "passes/gi_blend.comp", shaderDir);
+    m_screenShader = gl::Shader::compileFiles(shaderDir / "common/fullscreen.vert", shaderDir / "passes/gi_screen.frag", shaderDir);
 }
 
 void GIPass::execute(const RenderContext &ctx, RenderResources &res)
 {
-    if (!res.hasGiGrid())
+    if (!ctx.features.enableGi || !res.hasGiGrid())
     {
         return;
     }
@@ -71,7 +72,7 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     glBindTextureUnit(1, res.giShTexId(1));
     glBindTextureUnit(2, res.giShTexId(2));
     glBindTextureUnit(3, res.mazeGridTexId());
-    glBindTextureUnit(4, res.shadowDepthTex().id());
+    glBindTextureUnit(4, res.sampledShadowDepthTexId(ctx.features.enableShadows));
     glBindTextureUnit(5, res.albedoArrayTexId());
 
     res.giDispatchCmdSSBO().bind(GL_DISPATCH_INDIRECT_BUFFER);
@@ -85,6 +86,26 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     glBindImageTexture(2, res.giShTexId(2), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
     glDispatchComputeIndirect(16);
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+    if (res.aoWidth() > 0 && res.aoHeight() > 0)
+    {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+
+        res.giScreenFbo().bind();
+        glViewport(0, 0, res.aoWidth(), res.aoHeight());
+        m_screenShader.use();
+        res.frameUbo().bindBase(GL_UNIFORM_BUFFER, 0);
+        glBindTextureUnit(0, res.depthTex().id());
+        glBindTextureUnit(1, res.gbuffer1().id());
+        glBindTextureUnit(2, res.giShTexId(0));
+        glBindTextureUnit(3, res.giShTexId(1));
+        glBindTextureUnit(4, res.giShTexId(2));
+        glBindTextureUnit(5, res.mazeGridTexId());
+        res.drawFullscreenTriangle();
+    }
 }
 
 } // namespace game::render

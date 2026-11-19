@@ -1,6 +1,6 @@
 #pragma once
 
-#define GI_RAY_COUNT 16
+#define GI_RAY_COUNT 32
 #if GI_RAY_COUNT <= 16
 #define GI_PROBES_PER_GROUP 4
 #elif GI_RAY_COUNT <= 32
@@ -275,7 +275,7 @@ float evalPointLightWallVisibility(vec3 surfPos, vec3 lightPos, usampler2D mazeG
         return 1.0;
     }
 
-    const int kSteps = 14;
+    const int kSteps = 8;
     float stepLen = lenXZ / float(kSteps);
     float opticalDepth = 0.0;
     for (int i = 0; i < kSteps; ++i)
@@ -283,6 +283,10 @@ float evalPointLightWallVisibility(vec3 surfPos, vec3 lightPos, usampler2D mazeG
         float t = (float(i) + 0.5) / float(kSteps);
         vec3 p = mix(surfPos, lightPos, t);
         opticalDepth += sampleWallCoreDensity(p.xz, p.y, mazeGrid) * stepLen;
+        if (opticalDepth >= 1.35)
+        {
+            return 0.0;
+        }
     }
 
     return smoothstep(1.35, 0.35, opticalDepth);

@@ -25,6 +25,8 @@ struct SceneVertex
 struct alignas(16) MeshSpan
 {
     glm::vec4 boundingSphere{0.0f}; // xyz = local center, w = radius
+    glm::vec4 aabbMin{0.0f};        // xyz = local min
+    glm::vec4 aabbMax{0.0f};        // xyz = local max
     std::uint32_t indexCount = 0;
     std::uint32_t firstIndex = 0;
     std::int32_t baseVertex = 0;
@@ -59,6 +61,7 @@ inline constexpr std::uint32_t kObjectWorldUVFlag = 1u << 1;
 inline constexpr std::uint32_t kObjectWindSwayFlag = 1u << 2;
 inline constexpr std::uint32_t kObjectWaterFlag = 1u << 3;
 inline constexpr std::uint32_t kObjectStoneDetailFlag = 1u << 4;
+inline constexpr std::uint32_t kObjectNoPointShadowFlag = 1u << 5;
 
 /// Persistent GPU scene holding all meshes in a single MegaVBO/MegaIBO and bucketed indirect buffers.
 class MegaScene
@@ -88,12 +91,19 @@ public:
     /// Resets per-mesh indirect instanceCount to 0 via GPU copy from the static command template.
     void resetIndirectCommands() const;
 
+    /// Resets per-mesh rescue indirect instanceCount to 0 for HZB Pass 2 disocclusion rescue.
+    void resetRescueIndirectCommands() const;
+
     void bindMegaVao() const noexcept;
     void bindSceneBuffers(GLuint objectsSlot, GLuint meshesSlot, GLuint cmdsSlot, GLuint visibleIndicesSlot) const noexcept;
+    void bindCullStateBuffer(GLuint slot) const noexcept;
+    void bindRescueBuffers(GLuint cmdsSlot, GLuint visibleIndicesSlot) const noexcept;
     void bindDrawIndirectBuffer() const noexcept;
+    void bindRescueDrawIndirectBuffer() const noexcept;
 
     [[nodiscard]] std::uint32_t meshCount() const noexcept { return static_cast<std::uint32_t>(m_meshes.size()); }
     [[nodiscard]] std::uint32_t objectCount() const noexcept { return static_cast<std::uint32_t>(m_objects.size()); }
+    [[nodiscard]] std::uint64_t generation() const noexcept { return m_generation; }
     [[nodiscard]] std::span<const std::uint32_t> waterObjectIds() const noexcept { return m_waterObjectIds; }
     [[nodiscard]] const DrawObjectData &object(std::uint32_t objectId) const { return m_objects.at(objectId); }
     [[nodiscard]] const MeshSpan &meshSpan(std::uint32_t meshId) const { return m_meshes.at(meshId); }
@@ -109,6 +119,7 @@ private:
     std::vector<std::uint32_t> m_waterObjectIds;
 
     GLuint m_vao = 0;
+    std::uint64_t m_generation = 0;
     GpuBuffer m_vbo;
     GpuBuffer m_ibo;
     GpuBuffer m_meshSpansSSBO;
@@ -116,6 +127,9 @@ private:
     GpuBuffer m_cmdTemplateSSBO;
     GpuBuffer m_workingCmdsSSBO;
     GpuBuffer m_visibleIndicesSSBO;
+    GpuBuffer m_objectCullStateSSBO;
+    GpuBuffer m_rescueCmdsSSBO;
+    GpuBuffer m_rescueVisibleIndicesSSBO;
 };
 
 /// Helper procedural meshes for blockout & dungeon details.

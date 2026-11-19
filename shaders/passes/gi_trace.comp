@@ -110,9 +110,13 @@ vec3 sampleOctCellRay(uint p, uint tid, uint probeId, bool firstTime)
 
 float evalShadowAtHit(vec3 pos, vec3 N, float NdotL)
 {
-    if (uShadowParams.z < 0.5 || NdotL <= 0.0)
+    if (NdotL <= 0.0)
     {
         return 0.0;
+    }
+    if (uShadowParams.z < 0.5)
+    {
+        return 1.0;
     }
     vec3 biasedPos = pos + N * 0.05;
     vec4 sc = uLightViewProj * vec4(biasedPos, 1.0);

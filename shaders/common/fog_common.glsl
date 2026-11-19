@@ -29,3 +29,32 @@ vec3 reconstructFogWorldPos(vec2 uv, float linearZ)
     vec4 worldH = uInvViewProj * vec4(uv * 2.0 - 1.0, ndcZ, 1.0);
     return worldH.xyz / worldH.w;
 }
+
+vec4 sampleVolumetricFogAtPixel(vec2 uv, float depth, sampler3D fogAccumTex)
+{
+    if (uFogParams.x <= 1e-5)
+    {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    float nearZ = max(uTimeParams.z, 0.05);
+    float fogFar = max(uFogParams.w, nearZ + 1.0);
+    float linearZ = fogFar;
+    if (depth > 0.0)
+    {
+        vec3 worldPos = reconstructWorldPos(uv, depth);
+        vec3 viewPos = (uView * vec4(worldPos, 1.0)).xyz;
+        linearZ = max(-viewPos.z, nearZ);
+    }
+    vec3 uvw = fogLinearZToUVW(uv, linearZ, nearZ, fogFar, uFogDims.z);
+    vec4 fog = texture(fogAccumTex, uvw);
+    if (depth <= 0.0)
+    {
+        // Keep horizon mist seamless against parapets while clearing upper night sky for moon, clouds, and stars
+        vec3 skyDir = normalize(reconstructWorldPos(uv, 0.5) - uCameraPos.xyz);
+        float skyFogWeight = mix(1.0, 0.18, smoothstep(0.04, 0.46, max(skyDir.y, 0.0)));
+        fog.rgb *= skyFogWeight;
+        fog.a = mix(1.0, fog.a, skyFogWeight);
+    }
+    return fog;
+}
