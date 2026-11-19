@@ -2,6 +2,8 @@
 
 A real-time GPU-driven OpenGL 4.6 Core 3D dungeon exploration engine paired with an interactive Surface-of-Revolution (`SOR_Modeller`) asset tool. Nearly all architecture, masonry variations, props, vegetation, PBR materials, and lighting are generated procedurally without external asset packs.
 
+![preview](./assets/preview.png)
+
 ---
 
 ## Highlights
