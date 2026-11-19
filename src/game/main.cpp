@@ -21,11 +21,11 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -35,6 +35,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#define DEFAULT_WINDOW_WIDTH 1920
+#define DEFAULT_WINDOW_HEIGHT 1080
 
 namespace
 {
@@ -127,7 +130,8 @@ void appendPngChunk(std::vector<std::uint8_t> &out, const char type[4], std::spa
     const std::size_t typeOffset = out.size();
     out.insert(out.end(), type, type + 4);
     out.insert(out.end(), payload.begin(), payload.end());
-    const std::uint32_t crc = crc32Update(0u, std::span<const std::uint8_t>(out.data() + typeOffset, 4u + payload.size()));
+    const std::uint32_t crc =
+        crc32Update(0u, std::span<const std::uint8_t>(out.data() + typeOffset, 4u + payload.size()));
     appendBe32(out, crc);
 }
 
@@ -170,7 +174,8 @@ bool writeRgbPng(const std::filesystem::path &path, int width, int height, std::
         zlibData.push_back(static_cast<std::uint8_t>((len16 >> 8) & 0xFFu));
         zlibData.push_back(static_cast<std::uint8_t>(nlen16 & 0xFFu));
         zlibData.push_back(static_cast<std::uint8_t>((nlen16 >> 8) & 0xFFu));
-        zlibData.insert(zlibData.end(), rawScanlines.begin() + static_cast<std::ptrdiff_t>(offset), rawScanlines.begin() + static_cast<std::ptrdiff_t>(offset + blockLen));
+        zlibData.insert(zlibData.end(), rawScanlines.begin() + static_cast<std::ptrdiff_t>(offset),
+                        rawScanlines.begin() + static_cast<std::ptrdiff_t>(offset + blockLen));
         offset += blockLen;
     }
     appendBe32(zlibData, (adlerB << 16) | adlerA);
@@ -200,7 +205,9 @@ struct SmokeCameraShot
     glm::vec3 target{0.0f};
 };
 
-[[nodiscard]] std::vector<SmokeCameraShot> buildSmokeTestShots(const game::MazeMapData &map, const game::MazeSceneHandles &handles, const game::GameSession &session)
+[[nodiscard]] std::vector<SmokeCameraShot> buildSmokeTestShots(const game::MazeMapData &map,
+                                                               const game::MazeSceneHandles &handles,
+                                                               const game::GameSession &session)
 {
     std::vector<SmokeCameraShot> shots;
     shots.push_back({
@@ -209,8 +216,7 @@ struct SmokeCameraShot
         .target = session.eyePosition() + session.forwardDirection() * 4.0f,
     });
 
-    auto isSightlineWalkable = [&](glm::vec3 a, glm::vec3 b) -> bool
-    {
+    auto isSightlineWalkable = [&](glm::vec3 a, glm::vec3 b) -> bool {
         for (int s = 1; s <= 4; ++s)
         {
             const float t = static_cast<float>(s) / 5.0f;
@@ -261,8 +267,8 @@ struct SmokeCameraShot
             const glm::vec3 center = map.cellCenterWorld({x, y}, 0.0f);
             const glm::vec3 eye = center + glm::vec3(0.0f, 1.05f, 0.0f);
             const glm::vec3 target = handles.bushPositions.empty()
-                ? (center + glm::vec3(3.0f, 0.35f, 2.0f))
-                : (handles.bushPositions.front() + glm::vec3(0.0f, 0.35f, 0.0f));
+                                         ? (center + glm::vec3(3.0f, 0.35f, 2.0f))
+                                         : (handles.bushPositions.front() + glm::vec3(0.0f, 0.35f, 0.0f));
             if (glm::length(glm::vec2(target.x - eye.x, target.z - eye.z)) > 1.5f)
             {
                 shots.push_back({
@@ -306,10 +312,15 @@ struct SmokeCameraShot
                     continue;
                 }
                 const game::CellKind nbKind = map.getCell(nb);
-                if (nbKind != game::CellKind::Wall && nbKind != game::CellKind::Courtyard && map.isWalkable(nb) && map.getCell(back) == game::CellKind::Courtyard)
+                if (nbKind != game::CellKind::Wall && nbKind != game::CellKind::Courtyard && map.isWalkable(nb) &&
+                    map.getCell(back) == game::CellKind::Courtyard)
                 {
-                    const glm::vec3 portalFace = map.cellCenterWorld({x, y}, 2.0f) + glm::vec3(static_cast<float>(d.x), 0.0f, static_cast<float>(d.y)) * (map.cellSize * 0.5f);
-                    const glm::vec3 eye = map.cellCenterWorld(back, 1.35f) + glm::vec3(-static_cast<float>(d.y) * 0.45f, 0.0f, static_cast<float>(d.x) * 0.45f);
+                    const glm::vec3 portalFace =
+                        map.cellCenterWorld({x, y}, 2.0f) +
+                        glm::vec3(static_cast<float>(d.x), 0.0f, static_cast<float>(d.y)) * (map.cellSize * 0.5f);
+                    const glm::vec3 eye =
+                        map.cellCenterWorld(back, 1.35f) +
+                        glm::vec3(-static_cast<float>(d.y) * 0.45f, 0.0f, static_cast<float>(d.x) * 0.45f);
                     shots.push_back({
                         .filename = "05_courtyard_portal.png",
                         .eye = eye,
@@ -350,11 +361,12 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     ImGuiScope imgui(window.nativeHandle());
 
     const std::filesystem::path exeShaderDir = exeDir / "shaders";
-    const std::filesystem::path shaderDir = std::filesystem::exists(exeShaderDir) ? exeShaderDir : (std::filesystem::current_path() / "shaders");
+    const std::filesystem::path shaderDir =
+        std::filesystem::exists(exeShaderDir) ? exeShaderDir : (std::filesystem::current_path() / "shaders");
     game::render::Renderer renderer(window.width(), window.height(), shaderDir, !smokeTest);
 
-    auto syncSceneGpuData = [&](const game::MazeMapData &mazeMap, const game::MazeSceneHandles &handles, float wallHeight)
-    {
+    auto syncSceneGpuData = [&](const game::MazeMapData &mazeMap, const game::MazeSceneHandles &handles,
+                                float wallHeight) {
         std::vector<std::uint8_t> gridKinds(mazeMap.cells.size(), 1u);
         for (std::size_t i = 0; i < mazeMap.cells.size(); ++i)
         {
@@ -366,20 +378,23 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         renderer.resources().initGiGrid(mazeMap.size, mazeMap.cellSize, wallHeight, gridKinds);
     };
 
-    auto stageLabelFor = [](int stage) -> const char *
-    {
+    auto stageLabelFor = [](int stage) -> const char * {
         switch (stage)
         {
-        case 1: return "Carving procedural dungeon topology...";
-        case 2: return "Building stone architecture & props...";
-        case 3: return "Growing courtyard flora & crawling vines...";
-        case 4: return "Scattering instanced floor grass...";
-        default: return "Preparing scene builders...";
+        case 1:
+            return "Carving procedural dungeon topology...";
+        case 2:
+            return "Building stone architecture & props...";
+        case 3:
+            return "Growing courtyard flora & crawling vines...";
+        case 4:
+            return "Scattering instanced floor grass...";
+        default:
+            return "Preparing scene builders...";
         }
     };
 
-    auto drawLoadingScreen = [&](const char *title, const char *subtitle, float progress, bool overlayMode)
-    {
+    auto drawLoadingScreen = [&](const char *title, const char *subtitle, float progress, bool overlayMode) {
         const int winW = std::max(1, window.width());
         const int winH = std::max(1, window.height());
         const float minDim = static_cast<float>(std::min(winW, winH));
@@ -399,14 +414,18 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
 
         if (overlayMode)
         {
-            ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(static_cast<float>(winW), static_cast<float>(winH)), IM_COL32(8, 11, 18, 175));
+            ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f),
+                                                          ImVec2(static_cast<float>(winW), static_cast<float>(winH)),
+                                                          IM_COL32(8, 11, 18, 175));
         }
 
         const ImVec2 cardSize(460.0f * uiScale, 175.0f * uiScale);
-        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(winW) * 0.5f, static_cast<float>(winH) * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(winW) * 0.5f, static_cast<float>(winH) * 0.5f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(cardSize);
         ImGui::SetNextWindowBgAlpha(0.92f);
-        if (ImGui::Begin("##LoadingCard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
+        if (ImGui::Begin("##LoadingCard", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
         {
             ImGui::SetWindowFontScale(1.25f * uiScale * 0.72f);
             ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.45f, 1.0f), "%s", title);
@@ -448,21 +467,18 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     if (smokeTest)
     {
         map = game::generateMaze(mapDesc);
-        sceneHandles = game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc, &renderer.resources().grass());
+        sceneHandles =
+            game::buildMazeScene(map, renderer.resources().scene(), exeDir, sceneDesc, &renderer.resources().grass());
         syncSceneGpuData(map, sceneHandles, sceneDesc.wallHeight);
     }
     else
     {
         window.setCursorCaptured(false);
         std::atomic<int> cpuMazeStage{0};
-        auto cpuMatsFut = std::async(std::launch::async, []()
-        {
-            return game::render::RenderResources::generateStarterMaterialsCpu();
-        });
-        auto cpuSceneFut = std::async(std::launch::async, [&]()
-        {
-            return game::buildMazeSceneCpu(mapDesc, sceneDesc, exeDir, &cpuMazeStage);
-        });
+        auto cpuMatsFut = std::async(std::launch::async,
+                                     []() { return game::render::RenderResources::generateStarterMaterialsCpu(); });
+        auto cpuSceneFut = std::async(
+            std::launch::async, [&]() { return game::buildMazeSceneCpu(mapDesc, sceneDesc, exeDir, &cpuMazeStage); });
 
         bool passesDone = false;
         bool matsUploaded = false;
@@ -482,7 +498,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 passesDone = !renderer.stepNextPassInit(lastPassName);
                 const int doneSteps = renderer.completedPassInitSteps();
                 const int totalSteps = std::max(1, renderer.totalPassInitSteps());
-                const std::string msg = "Compiling GPU Shaders (" + std::to_string(doneSteps) + "/" + std::to_string(totalSteps) + "): " + lastPassName;
+                const std::string msg = "Compiling GPU Shaders (" + std::to_string(doneSteps) + "/" +
+                                        std::to_string(totalSteps) + "): " + lastPassName;
                 const float prog = 0.05f + 0.45f * (static_cast<float>(doneSteps) / static_cast<float>(totalSteps));
                 drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", msg.c_str(), prog, false);
             }
@@ -490,13 +507,15 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             {
                 if (cpuMatsFut.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
                 {
-                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Baking PBR material arrays on GPU...", 0.58f, false);
+                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Baking PBR material arrays on GPU...", 0.58f,
+                                      false);
                     renderer.initMaterialsFromCpu(cpuMatsFut.get());
                     matsUploaded = true;
                 }
                 else
                 {
-                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Generating procedural textures...", 0.52f, false);
+                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Generating procedural textures...", 0.52f,
+                                      false);
                 }
             }
             else
@@ -505,7 +524,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 const float prog = 0.62f + 0.08f * static_cast<float>(std::clamp(st, 0, 4));
                 if (cpuSceneFut.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
                 {
-                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Uploading geometry & initializing GI grid...", 0.96f, false);
+                    drawLoadingScreen("MazeGame // OpenGL 4.6 Loading", "Uploading geometry & initializing GI grid...",
+                                      0.96f, false);
                     game::BuiltMazeSceneCpu built = cpuSceneFut.get();
                     map = std::move(built.map);
                     sceneHandles = std::move(built.handles);
@@ -554,20 +574,18 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
 
     std::atomic<int> regenMazeStage{0};
     std::optional<std::future<game::BuiltMazeSceneCpu>> regenFuture;
-    auto startAsyncRegenerateMaze = [&]()
-    {
+    auto startAsyncRegenerateMaze = [&]() {
         if (regenFuture.has_value())
         {
             return;
         }
         regenMazeStage.store(0, std::memory_order_relaxed);
-        regenFuture = std::async(std::launch::async, [&]()
-        {
-            return game::buildMazeSceneCpu(mapDesc, sceneDesc, exeDir, &regenMazeStage);
-        });
+        regenFuture = std::async(
+            std::launch::async, [&]() { return game::buildMazeSceneCpu(mapDesc, sceneDesc, exeDir, &regenMazeStage); });
     };
 
-    const std::vector<SmokeCameraShot> smokeShots = smokeTest ? buildSmokeTestShots(map, sceneHandles, session) : std::vector<SmokeCameraShot>{};
+    const std::vector<SmokeCameraShot> smokeShots =
+        smokeTest ? buildSmokeTestShots(map, sceneHandles, session) : std::vector<SmokeCameraShot>{};
     const std::filesystem::path screenshotDir = std::filesystem::current_path() / "screenshots";
     constexpr std::uint32_t kWarmupFramesPerShot = 40u;
 
@@ -596,7 +614,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                 window.requestClose();
             }
         }
-        if (!window.isCursorCaptured() && window.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT) && !ImGui::GetIO().WantCaptureMouse)
+        if (!window.isCursorCaptured() && window.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT) &&
+            !ImGui::GetIO().WantCaptureMouse)
         {
             window.setCursorCaptured(true);
         }
@@ -637,8 +656,10 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         if (window.width() > 0 && window.height() > 0)
         {
             const float activeScale = smokeTest ? 1.0f : std::clamp(renderScale, 0.35f, 1.0f);
-            const int renderW = std::max(1, static_cast<int>(std::lround(static_cast<float>(window.width()) * activeScale)));
-            const int renderH = std::max(1, static_cast<int>(std::lround(static_cast<float>(window.height()) * activeScale)));
+            const int renderW =
+                std::max(1, static_cast<int>(std::lround(static_cast<float>(window.width()) * activeScale)));
+            const int renderH =
+                std::max(1, static_cast<int>(std::lround(static_cast<float>(window.height()) * activeScale)));
             if (renderW != lastRenderW || renderH != lastRenderH)
             {
                 renderer.onResize(renderW, renderH);
@@ -658,12 +679,14 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
             {
                 shotIdx = std::min<std::size_t>(frameCount / kWarmupFramesPerShot, smokeShots.size() - 1u);
                 activeEye = smokeShots[shotIdx].eye;
-                activeView = glm::lookAt(smokeShots[shotIdx].eye, smokeShots[shotIdx].target, glm::vec3(0.0f, 1.0f, 0.0f));
+                activeView =
+                    glm::lookAt(smokeShots[shotIdx].eye, smokeShots[shotIdx].target, glm::vec3(0.0f, 1.0f, 0.0f));
             }
 
             const float azRad = glm::radians(moonAzimuthDeg);
             const float elRad = glm::radians(std::clamp(moonElevationDeg, 8.0f, 88.0f));
-            const glm::vec3 moonDirection = glm::normalize(glm::vec3(std::cos(elRad) * std::cos(azRad), std::sin(elRad), std::cos(elRad) * std::sin(azRad)));
+            const glm::vec3 moonDirection = glm::normalize(
+                glm::vec3(std::cos(elRad) * std::cos(azRad), std::sin(elRad), std::cos(elRad) * std::sin(azRad)));
 
             const game::render::RenderContext ctx{
                 .view = activeView,
@@ -717,12 +740,14 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                     const float margin = 14.0f * uiScale;
                     ImGui::SetNextWindowPos(ImVec2(margin, 130.0f * uiScale), ImGuiCond_FirstUseEver);
                     ImGui::SetNextWindowBgAlpha(0.84f);
-                    if (ImGui::Begin("Render & Demo Panel", &showDebugPanel, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+                    if (ImGui::Begin("Render & Demo Panel", &showDebugPanel,
+                                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
                     {
                         if (ImGui::Button("Reload Shaders"))
                         {
                             lastShaderReloadOk = renderer.reloadShaders();
-                            shaderStatusMsg = lastShaderReloadOk ? "Shaders reloaded." : "Shader reload failed (see console).";
+                            shaderStatusMsg =
+                                lastShaderReloadOk ? "Shaders reloaded." : "Shader reload failed (see console).";
                         }
                         ImGui::SameLine();
                         if (ImGui::Button("New Maze"))
@@ -737,7 +762,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
 
                         if (!shaderStatusMsg.empty())
                         {
-                            const ImVec4 col = lastShaderReloadOk ? ImVec4(0.35f, 0.90f, 0.50f, 1.0f) : ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
+                            const ImVec4 col = lastShaderReloadOk ? ImVec4(0.35f, 0.90f, 0.50f, 1.0f)
+                                                                  : ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
                             ImGui::TextColored(col, "%s", shaderStatusMsg.c_str());
                         }
 
@@ -763,13 +789,25 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                         if (ImGui::CollapsingHeader("Atmosphere & Scale", ImGuiTreeNodeFlags_DefaultOpen))
                         {
                             ImGui::SliderFloat("Render Scale", &renderScale, 0.40f, 1.00f, "%.2fx");
-                            if (ImGui::Button("0.50x")) { renderScale = 0.50f; }
+                            if (ImGui::Button("0.50x"))
+                            {
+                                renderScale = 0.50f;
+                            }
                             ImGui::SameLine();
-                            if (ImGui::Button("0.67x")) { renderScale = 0.67f; }
+                            if (ImGui::Button("0.67x"))
+                            {
+                                renderScale = 0.67f;
+                            }
                             ImGui::SameLine();
-                            if (ImGui::Button("0.75x")) { renderScale = 0.75f; }
+                            if (ImGui::Button("0.75x"))
+                            {
+                                renderScale = 0.75f;
+                            }
                             ImGui::SameLine();
-                            if (ImGui::Button("1.00x")) { renderScale = 1.00f; }
+                            if (ImGui::Button("1.00x"))
+                            {
+                                renderScale = 1.00f;
+                            }
                             ImGui::Separator();
                             ImGui::SliderFloat("Moon Azimuth", &moonAzimuthDeg, -180.0f, 180.0f, "%.1f deg");
                             ImGui::SliderFloat("Moon Elevation", &moonElevationDeg, 8.0f, 88.0f, "%.1f deg");
@@ -792,9 +830,13 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
                         {
                             const auto &res = renderer.resources();
                             const glm::ivec2 hzbSz = res.hzbSize();
-                            ImGui::Text("Render: %dx%d -> %dx%d | Total GPU: %.2f ms", renderW, renderH, window.width(), window.height(), renderer.totalGpuMs());
-                            ImGui::Text("Scene: %u meshes, %u objs | HZB: %dx%d", res.scene().meshCount(), res.scene().objectCount(), hzbSz.x, hzbSz.y);
-                            if (ImGui::BeginTable("##PassTimings", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
+                            ImGui::Text("Render: %dx%d -> %dx%d | Total GPU: %.2f ms", renderW, renderH, window.width(),
+                                        window.height(), renderer.totalGpuMs());
+                            ImGui::Text("Scene: %u meshes, %u objs | HZB: %dx%d", res.scene().meshCount(),
+                                        res.scene().objectCount(), hzbSz.x, hzbSz.y);
+                            if (ImGui::BeginTable("##PassTimings", 2,
+                                                  ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                                                      ImGuiTableFlags_SizingFixedFit))
                             {
                                 ImGui::TableSetupColumn("Pass");
                                 ImGui::TableSetupColumn("ms");
@@ -832,7 +874,8 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
         window.swapBuffers();
 
         ++frameCount;
-        const std::uint32_t targetSmokeFrames = std::max<std::uint32_t>(120u, static_cast<std::uint32_t>(smokeShots.size()) * kWarmupFramesPerShot);
+        const std::uint32_t targetSmokeFrames =
+            std::max<std::uint32_t>(120u, static_cast<std::uint32_t>(smokeShots.size()) * kWarmupFramesPerShot);
         if (smokeTest && frameCount >= targetSmokeFrames)
         {
             break;
@@ -872,12 +915,25 @@ int main(int argc, char **argv)
         }
     }
 
+#ifdef _WIN32
+    if ((smokeTest || glDebug) && GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_UNKNOWN)
+    {
+        if (AttachConsole(ATTACH_PARENT_PROCESS))
+        {
+            FILE *dummyOut = nullptr;
+            FILE *dummyErr = nullptr;
+            freopen_s(&dummyOut, "CONOUT$", "w", stdout);
+            freopen_s(&dummyErr, "CONOUT$", "w", stderr);
+        }
+    }
+#endif
+
     try
     {
         const std::filesystem::path exeDir = getExecutableDirectory(argc > 0 ? argv[0] : nullptr);
         game::WindowConfig cfg{
-            .width = 1280,
-            .height = 720,
+            .width = DEFAULT_WINDOW_WIDTH,
+            .height = DEFAULT_WINDOW_HEIGHT,
             .title = "MazeGame (OpenGL 4.6 Core)",
             .vsync = !smokeTest,
             .hidden = smokeTest,

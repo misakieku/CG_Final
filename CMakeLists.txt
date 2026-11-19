@@ -125,6 +125,12 @@ add_executable(SOR_Modeller
 )
 target_link_libraries(SOR_Modeller PRIVATE cg_common imgui)
 cg_set_warnings(SOR_Modeller)
+if(WIN32)
+    set_target_properties(SOR_Modeller PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_link_options(SOR_Modeller PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
 
 # -----------------------------------------------------------------------------
 # Executable 2: MazeGame.exe
@@ -166,6 +172,12 @@ add_executable(MazeGame
 )
 target_link_libraries(MazeGame PRIVATE cg_common imgui)
 cg_set_warnings(MazeGame)
+if(WIN32)
+    set_target_properties(MazeGame PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_link_options(MazeGame PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+endif()
 
 # Sync external GLSL shaders next to MazeGame.exe on every build for portable Bin/ execution
 add_custom_target(MazeShaders ALL

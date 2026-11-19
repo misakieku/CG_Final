@@ -105,6 +105,13 @@ void main()
     vec2 duvdx = dFdx(baseUV);
     vec2 duvdy = dFdy(baseUV);
 
+    // Wrought-iron sconce brackets use world UVs but lock vertically to the forged steel band of material 9
+    if (vMaterialId == 9u && (vFlags & kObjectWorldUVFlag) != 0u)
+    {
+        baseUV.y = 0.56 + fract(baseUV.y) * 0.05;
+        duvdy *= 0.05;
+    }
+
     bool hasStoneDetail = (vFlags & kObjectStoneDetailFlag) != 0u;
     float brickId = 0.5;
     float brickEdge = 0.66;

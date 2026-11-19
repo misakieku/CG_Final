@@ -153,16 +153,49 @@ std::uint32_t MegaScene::registerDatMesh(const cg::DatMeshData &datMesh)
     }
     const float invHeight = 1.0f / std::max(1e-4f, maxY - minY);
 
-    std::vector<SceneVertex> verts(datMesh.positions.size());
+    std::vector<SceneVertex> verts;
+    verts.reserve(datMesh.positions.size() + 64u);
     for (std::size_t i = 0; i < datMesh.positions.size(); ++i)
     {
         const glm::vec3 &p = datMesh.positions[i];
         const glm::vec3 n = (i < datMesh.normals.size()) ? datMesh.normals[i] : glm::vec3(0.0f, 1.0f, 0.0f);
         const float u = (std::atan2(p.z, p.x) + glm::pi<float>()) / glm::two_pi<float>();
         const float v = (p.y - minY) * invHeight;
-        verts[i] = SceneVertex{p, n, glm::vec2(u, v)};
+        verts.push_back(SceneVertex{p, n, glm::vec2(u, v)});
     }
-    return registerMesh(verts, datMesh.indices);
+
+    // Duplicate vertices across the atan2 +/-pi seam so UV.x interpolates continuously [0.97 -> 1.00] without derivative spikes
+    std::vector<std::uint32_t> fixedIndices(datMesh.indices.begin(), datMesh.indices.end());
+    for (std::size_t t = 0; t + 2 < fixedIndices.size(); t += 3)
+    {
+        const std::uint32_t i0 = fixedIndices[t + 0];
+        const std::uint32_t i1 = fixedIndices[t + 1];
+        const std::uint32_t i2 = fixedIndices[t + 2];
+        if (i0 >= verts.size() || i1 >= verts.size() || i2 >= verts.size())
+        {
+            continue;
+        }
+        const float u0 = verts[i0].uv.x;
+        const float u1 = verts[i1].uv.x;
+        const float u2 = verts[i2].uv.x;
+        const float maxU = std::max({u0, u1, u2});
+        const float minU = std::min({u0, u1, u2});
+        if (maxU - minU > 0.5f)
+        {
+            for (std::size_t k = 0; k < 3; ++k)
+            {
+                const std::uint32_t idx = fixedIndices[t + k];
+                if (verts[idx].uv.x < 0.5f)
+                {
+                    SceneVertex dup = verts[idx];
+                    dup.uv.x += 1.0f;
+                    fixedIndices[t + k] = static_cast<std::uint32_t>(verts.size());
+                    verts.push_back(dup);
+                }
+            }
+        }
+    }
+    return registerMesh(verts, fixedIndices);
 }
 
 std::uint32_t MegaScene::addObject(std::uint32_t meshId, std::uint32_t materialId, const glm::mat4 &model, std::uint32_t flags)

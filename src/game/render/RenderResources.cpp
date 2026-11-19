@@ -975,7 +975,7 @@ StarterMaterialsCpuData RenderResources::generateStarterMaterialsCpu()
     };
 
     StarterMaterialsCpuData result;
-    result.layers.reserve(6);
+    result.layers.reserve(7);
     std::vector<StarterTexel> srcTexels(static_cast<std::size_t>(srcSize * srcSize));
 
     auto buildLayer = [&](int layer, float normalStrength, auto &&generator)
@@ -1158,6 +1158,89 @@ StarterMaterialsCpuData RenderResources::generateStarterMaterialsCpu()
             .ao = glm::mix(0.66f, 0.96f, tipBlend),
             .roughness = glm::mix(0.76f, 0.62f + 0.14f * (1.0f - lateralVein), woodyToLeaf),
             .metallic = 0.0f,
+            .height = height,
+        };
+    });
+
+    // Layer 9: Multi-band brazier torch mapped by normalized lathe height v (wood handle, iron collars, forged brazier cup, sooty rim)
+    buildLayer(9, 2.2f, [&](int x, int y) -> StarterTexel
+    {
+        const float u = static_cast<float>(x) / 256.0f;
+        const float v = static_cast<float>(y) / 256.0f;
+        const float twoPi = 6.283185307f;
+
+        // Strictly U-periodic grain & forged hammer relief across atan2 seam
+        const float woodFiber = 0.5f + 0.35f * std::sin(u * twoPi * 10.0f + std::sin(v * 24.0f) * 1.1f)
+                                     + 0.15f * std::cos(u * twoPi * 22.0f - v * 9.0f);
+        const float woodRing = 0.5f + 0.5f * std::sin(v * 42.0f + woodFiber * 2.4f);
+        const glm::vec3 woodDark = srgbToLin(glm::vec3(0.24f, 0.11f, 0.08f));
+        const glm::vec3 woodLight = srgbToLin(glm::vec3(0.40f, 0.20f, 0.15f));
+        const glm::vec3 woodCol = glm::mix(woodDark, woodLight, std::clamp(woodFiber * 0.68f + woodRing * 0.32f, 0.0f, 1.0f));
+
+        const float hammer = 0.5f + 0.5f * std::sin(u * twoPi * 8.0f + std::sin(v * 38.0f) * 1.3f) * std::cos(v * 44.0f);
+        const float brush = 0.5f + 0.5f * std::sin(u * twoPi * 16.0f + v * 14.0f);
+        const glm::vec3 collarCol = srgbToLin(glm::mix(glm::vec3(0.46f, 0.48f, 0.53f), glm::vec3(0.64f, 0.67f, 0.72f), hammer * 0.65f + brush * 0.35f));
+        const glm::vec3 cupCol = srgbToLin(glm::mix(glm::vec3(0.26f, 0.27f, 0.31f), glm::vec3(0.39f, 0.40f, 0.45f), hammer * 0.70f + brush * 0.30f));
+
+        auto bandMask = [&](float a, float b, float feather) -> float
+        {
+            const float lo = std::clamp((v - (a - feather)) / std::max(2.0f * feather, 1e-4f), 0.0f, 1.0f);
+            const float hi = std::clamp(((b + feather) - v) / std::max(2.0f * feather, 1e-4f), 0.0f, 1.0f);
+            const float sLo = lo * lo * (3.0f - 2.0f * lo);
+            const float sHi = hi * hi * (3.0f - 2.0f * hi);
+            return sLo * sHi;
+        };
+        auto seamGroove = [&](float edge) -> float
+        {
+            const float d = std::abs(v - edge);
+            return std::exp(-(d * d) / (0.0085f * 0.0085f));
+        };
+
+        const float pommelCap = bandMask(-0.02f, 0.035f, 0.008f);
+        const float lowerCollar = bandMask(0.16f, 0.25f, 0.009f);
+        const float upperCollar = bandMask(0.54f, 0.635f, 0.010f);
+        const float collarMask = std::max({pommelCap, lowerCollar, upperCollar});
+        const float cupMask = std::clamp((v - 0.630f) / 0.020f, 0.0f, 1.0f);
+        const float sootMask = std::clamp((v - 0.945f) / 0.045f, 0.0f, 1.0f);
+
+        const float groove = std::max({seamGroove(0.035f), seamGroove(0.16f), seamGroove(0.25f), seamGroove(0.54f), seamGroove(0.635f)});
+
+        glm::vec3 albedo = woodCol;
+        float roughness = 0.72f + (1.0f - woodFiber) * 0.12f;
+        float metallic = 0.0f;
+        float height = 0.36f + woodFiber * 0.14f;
+        float ao = 0.84f + 0.16f * woodFiber;
+
+        // Forged iron cup on upper half
+        albedo = glm::mix(albedo, cupCol, cupMask);
+        roughness = glm::mix(roughness, 0.36f + (1.0f - hammer) * 0.14f, cupMask);
+        metallic = glm::mix(metallic, 0.94f, cupMask);
+        height = glm::mix(height, 0.54f + hammer * 0.16f, cupMask);
+        ao = glm::mix(ao, 0.78f + 0.22f * hammer, cupMask);
+
+        // Brighter pewter-steel raised collars on shaft & brazier neck
+        albedo = glm::mix(albedo, collarCol, collarMask);
+        roughness = glm::mix(roughness, 0.30f + (1.0f - brush) * 0.12f, collarMask);
+        metallic = glm::mix(metallic, 1.0f, collarMask);
+        height = glm::mix(height, 0.78f + hammer * 0.12f, collarMask);
+        ao = glm::mix(ao, 0.86f + 0.14f * brush, collarMask);
+
+        // Sooty charred ash rim around top brazier lip
+        const glm::vec3 sootCol = srgbToLin(glm::vec3(0.06f, 0.055f, 0.055f));
+        albedo = glm::mix(albedo, sootCol, sootMask * 0.88f);
+        roughness = glm::mix(roughness, 0.92f, sootMask);
+        metallic = glm::mix(metallic, 0.12f, sootMask);
+        ao *= 1.0f - 0.38f * sootMask;
+
+        // Recessed mechanical seam crevice where metal meets wood or cup
+        ao *= 1.0f - 0.65f * groove;
+        height = std::max(0.05f, height - 0.28f * groove);
+
+        return StarterTexel{
+            .albedo = albedo,
+            .ao = ao,
+            .roughness = roughness,
+            .metallic = metallic,
             .height = height,
         };
     });

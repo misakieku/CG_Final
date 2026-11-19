@@ -25,6 +25,7 @@ constexpr std::uint32_t kMatGoldAccent = 2;
 constexpr std::uint32_t kMatVineMoss = 3;
 constexpr std::uint32_t kMatBushFoliage = 7;
 constexpr std::uint32_t kMatWoodPlank = 8;
+constexpr std::uint32_t kMatTorch = 9;
 
 struct LoadedSorModel
 {
@@ -621,19 +622,21 @@ MazeSceneHandles populateMazeSceneCpu(
     {
         const PropSpawn &torch = map.wallTorches[tIdx];
         const glm::vec3 back = -torch.normal;
-        scene.addObject(bevelBoxMesh, kMatStoneWall, makeTransform(torch.position + back * (0.09f * torchScale) + glm::vec3(0.0f, 0.08f * torchScale, 0.0f), torch.yaw, glm::vec3(0.14f, 0.18f, 0.18f) * torchScale), torchFlags);
+        // Sleek wrought-iron wall sconce plate & clasp gripping the torch shaft
+        scene.addObject(bevelBoxMesh, kMatTorch, makeTransform(torch.position + back * (0.012f * torchScale) + glm::vec3(0.0f, 0.09f * torchScale, 0.0f), torch.yaw, glm::vec3(0.056f, 0.15f, 0.024f) * torchScale), torchFlags);
+        scene.addObject(bevelBoxMesh, kMatTorch, makeTransform(torch.position + torch.normal * (0.018f * torchScale) + glm::vec3(0.0f, 0.09f * torchScale, 0.0f), torch.yaw, glm::vec3(0.068f, 0.036f, 0.072f) * torchScale), torchFlags);
 
         glm::vec3 flameBasePos = torch.position + glm::vec3(0.0f, 0.34f * torchScale, 0.0f);
         glm::vec3 lightPos = torch.position + torch.normal * (0.14f * torchScale) + glm::vec3(0.0f, 0.48f * torchScale, 0.0f);
 
         if (torchModel.loaded)
         {
-            const glm::vec3 pivotPos = torch.position + torch.normal * (0.03f * torchScale) + glm::vec3(0.0f, 0.14f * torchScale, 0.0f);
+            const glm::vec3 pivotPos = torch.position + torch.normal * (0.042f * torchScale) + glm::vec3(0.0f, 0.14f * torchScale, 0.0f);
             glm::mat4 torchModelMat = glm::translate(glm::mat4(1.0f), pivotPos);
             torchModelMat = glm::rotate(torchModelMat, torch.yaw, glm::vec3(0.0f, 1.0f, 0.0f));
             torchModelMat = glm::rotate(torchModelMat, glm::radians(14.0f), glm::vec3(1.0f, 0.0f, 0.0f));
             torchModelMat = glm::scale(torchModelMat, glm::vec3(torchFitScale));
-            scene.addObject(torchModel.meshId, kMatGoldAccent, torchModelMat, render::kObjectVisibleFlag | render::kObjectNoPointShadowFlag);
+            scene.addObject(torchModel.meshId, kMatTorch, torchModelMat, render::kObjectVisibleFlag | render::kObjectNoPointShadowFlag);
 
             const float localTopY = torchModel.minY + torchModel.height;
             const glm::vec3 cupTopWorld = glm::vec3(torchModelMat * glm::vec4(0.0f, localTopY, 0.0f, 1.0f));

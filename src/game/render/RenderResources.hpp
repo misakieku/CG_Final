@@ -262,7 +262,7 @@ private:
     void updatePointShadowSlots(const glm::vec3 &cameraPos, bool allowMultiSwap);
 
     static constexpr int kMaterialArraySize = 1024;
-    static constexpr int kMaterialArrayLayers = 9;
+    static constexpr int kMaterialArrayLayers = 10;
     static constexpr int kMaterialMipLevels = 11;
 
     int m_width = 0;
