@@ -744,8 +744,6 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
     std::uniform_real_distribution<float> candleScaleRand(candleMin, candleMax);
 
     const float halfCell = data.cellSize * 0.5f;
-    const float minTorchDist = data.cellSize * std::max(0.25f, desc.torchMinSpacingCells);
-    const float minTorchDistSq = minTorchDist * minTorchDist;
 
     auto isTreasureCell = [&](glm::ivec2 cell) -> bool {
         const glm::vec3 center = data.cellCenterWorld(cell);
@@ -760,13 +758,23 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
         return false;
     };
 
-    auto hasNearbyTorch = [&](const glm::vec3 &pos) -> bool {
-        for (const PropSpawn &t : data.wallTorches)
+    auto hasSameCorridorAdjacentTorch = [&](glm::ivec2 cell, const glm::vec3 &inward) -> bool {
+        for (const glm::ivec2 step : kCardinalDirs)
         {
-            const glm::vec2 d(pos.x - t.position.x, pos.z - t.position.z);
-            if (glm::dot(d, d) < minTorchDistSq)
+            const glm::ivec2 nb = cell + step;
+            if (!data.isWalkable(nb))
             {
-                return true;
+                continue;
+            }
+            const glm::vec3 nbCenter = data.cellCenterWorld(nb);
+            for (const PropSpawn &t : data.wallTorches)
+            {
+                const glm::vec2 d(t.position.x - nbCenter.x, t.position.z - nbCenter.z);
+                if (glm::dot(d, d) < (data.cellSize * 0.85f) * (data.cellSize * 0.85f) &&
+                    glm::dot(t.normal, inward) > 0.7f)
+                {
+                    return true;
+                }
             }
         }
         return false;
@@ -838,6 +846,358 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
         return false;
     };
 
+    // 1. Simulated Torchbearer ("walk-and-place") lighting pass along walkable corridors
+    const int totalCells = data.size.x * data.size.y;
+    std::vector<int> lightDist(static_cast<std::size_t>(totalCells), 9999);
+    std::vector<uint8_t> cellHasTorch(static_cast<std::size_t>(totalCells), 0u);
+    std::vector<uint8_t> cellHasCandle(static_cast<std::size_t>(totalCells), 0u);
+
+    auto relaxLight = [&](glm::ivec2 seedCell, int seedDist) {
+        std::queue<std::pair<glm::ivec2, int>> q;
+        const int seedIdx = data.getCellIndex(seedCell.x, seedCell.y);
+        if (seedDist < lightDist[static_cast<std::size_t>(seedIdx)])
+        {
+            lightDist[static_cast<std::size_t>(seedIdx)] = seedDist;
+            q.push({seedCell, seedDist});
+        }
+        while (!q.empty())
+        {
+            const auto [cur, d] = q.front();
+            q.pop();
+            if (d >= 5)
+            {
+                continue;
+            }
+            for (const glm::ivec2 step : kCardinalDirs)
+            {
+                const glm::ivec2 nb = cur + step;
+                if (!data.isWalkable(nb))
+                {
+                    continue;
+                }
+                const int nbIdx = data.getCellIndex(nb.x, nb.y);
+                if (d + 1 < lightDist[static_cast<std::size_t>(nbIdx)])
+                {
+                    lightDist[static_cast<std::size_t>(nbIdx)] = d + 1;
+                    q.push({nb, d + 1});
+                }
+            }
+        }
+    };
+
+    // Moonlight illuminates open courtyards softly, naturally tapering off 1-2 steps inside corridors
+    for (int y = 1; y < data.size.y - 1; ++y)
+    {
+        for (int x = 1; x < data.size.x - 1; ++x)
+        {
+            if (data.getCell({x, y}) == CellKind::Courtyard)
+            {
+                relaxLight({x, y}, 1);
+            }
+        }
+    }
+
+    auto tryPlaceTorchOnCell = [&](glm::ivec2 cell, glm::ivec2 travelDir, int stepParity) -> bool {
+        if (!desc.enableTorches)
+        {
+            return false;
+        }
+        const int cellIdx = data.getCellIndex(cell.x, cell.y);
+        if (cellHasTorch[static_cast<std::size_t>(cellIdx)] != 0u)
+        {
+            return false;
+        }
+
+        // Order candidate walls like an explorer: side walls (alternating left/right), then forward wall, then back
+        const glm::ivec2 leftDir(-travelDir.y, travelDir.x);
+        const glm::ivec2 rightDir(travelDir.y, -travelDir.x);
+        const std::array<glm::ivec2, 4> orderedDirs = (stepParity & 1) == 0
+            ? std::array<glm::ivec2, 4>{leftDir, rightDir, travelDir, -travelDir}
+            : std::array<glm::ivec2, 4>{rightDir, leftDir, travelDir, -travelDir};
+
+        const glm::vec3 center = data.cellCenterWorld(cell);
+
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            for (const glm::ivec2 dir : orderedDirs)
+            {
+                const glm::ivec2 neighbor = cell + dir;
+                if (data.inBounds(neighbor) && data.getCell(neighbor) != CellKind::Wall)
+                {
+                    continue;
+                }
+                const glm::vec3 outward(static_cast<float>(dir.x), 0.0f, static_cast<float>(dir.y));
+                const glm::vec3 inward = -outward;
+                const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
+                const glm::vec3 wallFace = center + outward * halfCell;
+                const float wallYaw = std::atan2(inward.x, inward.z);
+
+                if (pass == 0 && hasSameCorridorAdjacentTorch(cell, inward))
+                {
+                    continue;
+                }
+
+                const float sideShift = (((cell.x + cell.y) & 1) == 0) ? 0.85f : -0.85f;
+                const std::array<float, 3> tangentOffsets{0.0f, sideShift, -sideShift};
+                const glm::vec3 baseTorchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
+                for (const float off : tangentOffsets)
+                {
+                    const glm::vec3 candPos = baseTorchPos + tangent * off;
+                    if (!conflictsWithArchOrPillar(candPos))
+                    {
+                        data.wallTorches.push_back(PropSpawn{candPos, inward, wallYaw, 1.0f});
+                        cellHasTorch[static_cast<std::size_t>(cellIdx)] = 1u;
+                        relaxLight(cell, 0);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    auto tryPlaceCandlesOnCell = [&](glm::ivec2 cell, int clustersPerWall, bool allWalls) -> bool {
+        if (!desc.enableCandles || clustersPerWall <= 0)
+        {
+            return false;
+        }
+        const glm::vec3 center = data.cellCenterWorld(cell);
+        std::array<glm::ivec2, 4> dirs = kCardinalDirs;
+        std::shuffle(dirs.begin(), dirs.end(), eng);
+        bool placedAny = false;
+        for (const glm::ivec2 dir : dirs)
+        {
+            const glm::ivec2 neighbor = cell + dir;
+            if (data.inBounds(neighbor) && data.getCell(neighbor) != CellKind::Wall)
+            {
+                continue;
+            }
+            const glm::vec3 outward(static_cast<float>(dir.x), 0.0f, static_cast<float>(dir.y));
+            const glm::vec3 inward = -outward;
+            const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
+            const glm::vec3 wallFace = center + outward * halfCell;
+
+            for (int c = 0; c < clustersPerWall; ++c)
+            {
+                const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.55f);
+                const float depthOffset = 0.25f + unitRand(eng) * 0.18f;
+                const glm::vec3 candlePos = wallFace + inward * depthOffset + tangent * sideOffset;
+                data.candles.push_back(PropSpawn{candlePos, glm::vec3(0.0f, 1.0f, 0.0f), yawRand(eng), candleScaleRand(eng)});
+                placedAny = true;
+            }
+            if (!allWalls)
+            {
+                break;
+            }
+        }
+        if (placedAny)
+        {
+            const int cellIdx = data.getCellIndex(cell.x, cell.y);
+            cellHasCandle[static_cast<std::size_t>(cellIdx)] = 1u;
+            relaxLight(cell, 0);
+        }
+        return placedAny;
+    };
+
+    // Anchor landmarks first: start cell, exit shrine, and treasure alcoves
+    for (int y = 1; y < data.size.y - 1; ++y)
+    {
+        for (int x = 1; x < data.size.x - 1; ++x)
+        {
+            const glm::ivec2 cell{x, y};
+            const CellKind kind = data.getCell(cell);
+            if (kind == CellKind::Wall)
+            {
+                continue;
+            }
+            const bool shrineOrExit = (kind == CellKind::Exit) || isTreasureCell(cell);
+            if (shrineOrExit || cell == data.startCell)
+            {
+                tryPlaceTorchOnCell(cell, glm::ivec2(0, 1), x + y);
+                if (shrineOrExit)
+                {
+                    tryPlaceCandlesOnCell(cell, std::max(1, desc.shrineCandleClusters), true);
+                }
+            }
+        }
+    }
+
+    // Explorer DFS walk placing torches & candles organically along walkable routes
+    struct WalkNode
+    {
+        glm::ivec2 cell;
+        glm::ivec2 travelDir;
+        int parity;
+    };
+    std::vector<uint8_t> walkVisited(static_cast<std::size_t>(totalCells), 0u);
+    std::vector<WalkNode> walkStack;
+    walkStack.push_back({data.startCell, glm::ivec2(1, 0), 0});
+    walkVisited[static_cast<std::size_t>(data.getCellIndex(data.startCell.x, data.startCell.y))] = 1u;
+
+    const float torchChance = std::clamp(desc.torchWallChance, 0.0f, 1.0f);
+    const int baseStride = std::max(2, static_cast<int>(std::round(desc.torchMinSpacingCells + 0.6f)));
+    const int chanceExtraStride = static_cast<int>(std::round((1.0f - torchChance) * 3.0f));
+    const int maxSafeDarkDist = baseStride + chanceExtraStride + 1;
+
+    while (!walkStack.empty())
+    {
+        const WalkNode cur = walkStack.back();
+        walkStack.pop_back();
+
+        const CellKind curKind = data.getCell(cur.cell);
+        const int curIdx = data.getCellIndex(cur.cell.x, cur.cell.y);
+
+        if (curKind != CellKind::Courtyard && torchChance > 0.0f)
+        {
+            int walkableDegree = 0;
+            for (const glm::ivec2 d : kCardinalDirs)
+            {
+                if (data.isWalkable(cur.cell + d))
+                {
+                    ++walkableDegree;
+                }
+            }
+            const bool isTurningOrJunction = (walkableDegree >= 3) || !data.isWalkable(cur.cell + cur.travelDir);
+            const int jitter = (unitRand(eng) < (0.85f - 0.55f * torchChance)) ? 1 : 0;
+            const int desiredStride = baseStride + chanceExtraStride + jitter;
+            const int targetStride = isTurningOrJunction ? std::max(2, desiredStride - 1) : desiredStride;
+
+            if (lightDist[static_cast<std::size_t>(curIdx)] >= targetStride)
+            {
+                const bool placeTorch = (unitRand(eng) < std::max(0.25f, torchChance)) ||
+                                        (lightDist[static_cast<std::size_t>(curIdx)] >= maxSafeDarkDist);
+                if (placeTorch)
+                {
+                    if (!tryPlaceTorchOnCell(cur.cell, cur.travelDir, cur.parity))
+                    {
+                        tryPlaceCandlesOnCell(cur.cell, 1, false);
+                    }
+                }
+            }
+        }
+
+        std::array<glm::ivec2, 4> nextDirs = kCardinalDirs;
+        std::shuffle(nextDirs.begin(), nextDirs.end(), eng);
+        // Push straight direction last so LIFO stack explores straight corridors naturally first
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            for (const glm::ivec2 d : nextDirs)
+            {
+                const bool isStraight = (d == cur.travelDir);
+                if ((pass == 0 && isStraight) || (pass == 1 && !isStraight))
+                {
+                    continue;
+                }
+                const glm::ivec2 nb = cur.cell + d;
+                if (!data.isWalkable(nb))
+                {
+                    continue;
+                }
+                const int nbIdx = data.getCellIndex(nb.x, nb.y);
+                if (walkVisited[static_cast<std::size_t>(nbIdx)] == 0u)
+                {
+                    walkVisited[static_cast<std::size_t>(nbIdx)] = 1u;
+                    walkStack.push_back({nb, d, cur.parity + 1});
+                }
+            }
+        }
+    }
+
+    // Final safety guarantee: ensure zero dark dead-zones remain anywhere in roofed corridors
+    if (torchChance > 0.0f)
+    {
+        for (int y = 1; y < data.size.y - 1; ++y)
+        {
+            for (int x = 1; x < data.size.x - 1; ++x)
+            {
+                const glm::ivec2 cell{x, y};
+                const CellKind kind = data.getCell(cell);
+                if (kind == CellKind::Wall || kind == CellKind::Courtyard)
+                {
+                    continue;
+                }
+                const int idx = data.getCellIndex(x, y);
+                if (lightDist[static_cast<std::size_t>(idx)] >= maxSafeDarkDist)
+                {
+                    if (!tryPlaceTorchOnCell(cell, glm::ivec2(1, 0), x + y))
+                    {
+                        tryPlaceCandlesOnCell(cell, 1, false);
+                    }
+                }
+            }
+        }
+    }
+
+    // Outdoor courtyard perimeter torches: placed selectively on walls away from gates/arches
+    if (desc.enableTorches && torchChance > 0.0f)
+    {
+        const float minGateClearanceSq = (data.cellSize * 1.35f) * (data.cellSize * 1.35f);
+        const float minOutdoorTorchDistSq = (data.cellSize * 2.25f) * (data.cellSize * 2.25f);
+
+        auto isFarFromArchGates = [&](const glm::vec3 &pos) -> bool {
+            const glm::vec2 pXZ(pos.x, pos.z);
+            for (const ArchFootprint &arch : archFootprints)
+            {
+                const glm::vec2 d = pXZ - arch.centerXZ;
+                if (glm::dot(d, d) < minGateClearanceSq)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto hasNearbyOutdoorTorch = [&](const glm::vec3 &pos) -> bool {
+            const glm::vec2 pXZ(pos.x, pos.z);
+            for (const PropSpawn &t : data.wallTorches)
+            {
+                const glm::vec2 d(pXZ.x - t.position.x, pXZ.y - t.position.z);
+                if (glm::dot(d, d) < minOutdoorTorchDistSq)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for (int y = 1; y < data.size.y - 1; ++y)
+        {
+            for (int x = 1; x < data.size.x - 1; ++x)
+            {
+                const glm::ivec2 cell{x, y};
+                if (data.getCell(cell) != CellKind::Courtyard)
+                {
+                    continue;
+                }
+                const glm::vec3 center = data.cellCenterWorld(cell);
+                for (const glm::ivec2 dir : kCardinalDirs)
+                {
+                    const glm::ivec2 neighbor = cell + dir;
+                    if (data.inBounds(neighbor) && data.getCell(neighbor) != CellKind::Wall)
+                    {
+                        continue;
+                    }
+                    if (unitRand(eng) > torchChance * 0.75f)
+                    {
+                        continue;
+                    }
+                    const glm::vec3 outward(static_cast<float>(dir.x), 0.0f, static_cast<float>(dir.y));
+                    const glm::vec3 inward = -outward;
+                    const glm::vec3 wallFace = center + outward * halfCell;
+                    const glm::vec3 candPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
+                    if (!conflictsWithArchOrPillar(candPos) && isFarFromArchGates(candPos) && !hasNearbyOutdoorTorch(candPos))
+                    {
+                        const float wallYaw = std::atan2(inward.x, inward.z);
+                        data.wallTorches.push_back(PropSpawn{candPos, inward, wallYaw, 1.0f});
+                        cellHasTorch[static_cast<std::size_t>(data.getCellIndex(x, y))] = 1u;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Ambient floor candles (free scenic detail along indoor & courtyard walls) + wall-edge rubble
     for (int y = 1; y < data.size.y - 1; ++y)
     {
         for (int x = 1; x < data.size.x - 1; ++x)
@@ -864,35 +1224,11 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
                 const glm::vec3 inward = -outward;
                 const glm::vec3 tangent(-inward.z, 0.0f, inward.x);
                 const glm::vec3 wallFace = center + outward * halfCell;
-                const float wallYaw = std::atan2(inward.x, inward.z);
 
-                // Wall torches (spaced by torchMinSpacingCells, avoiding arch pilasters and corner pillars)
-                if (desc.enableTorches)
+                if (desc.enableCandles && !shrineOrExit)
                 {
-                    const bool passChecker = !desc.torchCheckerFilter || (((x * 3 + y * 5) % 2) == 0);
-                    const bool guaranteedSpot = shrineOrExit || cell == data.startCell;
-                    if (guaranteedSpot || (passChecker && unitRand(eng) < desc.torchWallChance))
-                    {
-                        const float sideShift = (((x + y) & 1) == 0) ? 0.85f : -0.85f;
-                        const std::array<float, 3> tangentOffsets{0.0f, sideShift, -sideShift};
-                        const glm::vec3 baseTorchPos = wallFace + inward * 0.18f + glm::vec3(0.0f, desc.torchMountHeight, 0.0f);
-                        for (const float off : tangentOffsets)
-                        {
-                            const glm::vec3 candPos = baseTorchPos + tangent * off;
-                            if (!conflictsWithArchOrPillar(candPos) && !hasNearbyTorch(candPos))
-                            {
-                                data.wallTorches.push_back(PropSpawn{candPos, inward, wallYaw, 1.0f});
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Floor candles along walls (guaranteed around treasure shrines & exit)
-                if (desc.enableCandles)
-                {
-                    const int candleCount = shrineOrExit ? std::max(0, desc.shrineCandleClusters) : (unitRand(eng) < desc.candleWallChance ? 1 : 0);
-                    for (int c = 0; c < candleCount; ++c)
+                    const float chance = (kind == CellKind::Courtyard) ? (desc.candleWallChance * 0.85f) : desc.candleWallChance;
+                    if (unitRand(eng) < chance)
                     {
                         const float sideOffset = (unitRand(eng) - 0.5f) * (data.cellSize * 0.55f);
                         const float depthOffset = 0.25f + unitRand(eng) * 0.18f;
@@ -902,7 +1238,6 @@ void populateProps(MazeMapData &data, std::mt19937 &eng, const MazeGenDesc &desc
                     }
                 }
 
-                // Wall-edge rubble keeping the center path clear
                 if (desc.enableRubble)
                 {
                     const int rubbleCount = 1 + (unitRand(eng) < desc.rubbleExtraWallChance ? 1 : 0) + (kind == CellKind::Courtyard ? 1 : 0);

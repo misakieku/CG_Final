@@ -561,7 +561,7 @@ void runGameLoop(game::Window &window, const std::filesystem::path &exeDir, bool
     float fogFar = 56.0f;
     float renderScale = 1.0f;
     float moonAzimuthDeg = 37.9f;
-    float moonElevationDeg = 25.1f;
+    float moonElevationDeg = 45.1f;
     float probeDebugRadius = 0.11f;
     int lastRenderW = window.width();
     int lastRenderH = window.height();

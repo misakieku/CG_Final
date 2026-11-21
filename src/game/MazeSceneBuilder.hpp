@@ -66,7 +66,7 @@ struct MazeSceneDesc
     float candleClusterRadius = 0.22f;
     float candleHeight = 0.28f;
     float candleScale = 1.0f;
-    PointLightDesc candleLight{.color = {1.0f, 0.62f, 0.24f}, .radius = 3.3f, .intensity = 0.78f};
+    PointLightDesc candleLight{.color = {1.0f, 0.62f, 0.24f}, .radius = 3.3f, .intensity = 0.75f};
 
     // Treasures, pottery accents & exit beacon
     float treasureHeight = 0.85f;

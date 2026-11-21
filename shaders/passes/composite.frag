@@ -198,7 +198,7 @@ void main()
         if ((uFogDims.w & kFeatureGiBit) != 0u)
         {
             float viewZ = max(0.01, -(uView * vec4(worldPos, 1.0)).z);
-            indirectGi = sampleHalfResGi(coord, viewZ);
+            indirectGi = sampleHalfResGi(coord, viewZ) * 1.5;
         }
         else
         {

@@ -133,13 +133,12 @@ struct MazeGenDesc
     // Wall torches
     bool enableTorches = true;
     float torchMinSpacingCells = 1.45f;
-    bool torchCheckerFilter = true;
-    float torchWallChance = 1.0f;
+    float torchWallChance = 0.75f;
     float torchMountHeight = 2.1f;
 
     // Candle cluster anchors along walls
     bool enableCandles = true;
-    float candleWallChance = 0.28f;
+    float candleWallChance = 0.3f;
     int shrineCandleClusters = 2;
     float candleScaleMin = 0.85f;
     float candleScaleMax = 1.15f;

@@ -50,7 +50,7 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     res.giDispatchCmdSSBO().upload(0, sizeof(kInitDispatch), kInitDispatch.data());
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
-    // 1. Mark probes touched by visible screen-space depth pixels
+    // Mark probes touched by visible screen-space depth pixels
     m_markShader.use();
     glBindTextureUnit(0, res.depthTex().id());
     glBindTextureUnit(1, res.gbuffer1().id());
@@ -60,12 +60,12 @@ void GIPass::execute(const RenderContext &ctx, RenderResources &res)
     glDispatchCompute((halfW + 7u) / 8u, (halfH + 7u) / 8u, 1u);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 2. Compact active probe IDs & increment DispatchIndirect X count
+    // Compact active probe IDs & increment DispatchIndirect X count
     m_compactShader.use();
     glDispatchCompute((totalProbes + 63u) / 64u, 1u, 1u);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 3. Trace 64 Grid-DDA rays per active visible probe (reads previous frame 3D SH for temporal multi-bounce)
+    // Trace 64 Grid-DDA rays per active visible probe (reads previous frame 3D SH for temporal multi-bounce)
     m_traceShader.use();
     res.lightsSSBO().bindBase(GL_SHADER_STORAGE_BUFFER, 4);
     glBindTextureUnit(0, res.giShTexId(0));
